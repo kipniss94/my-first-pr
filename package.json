@@ -1,0 +1,34 @@
+{
+  "name": "docuview",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DocuView - fast online viewer for CAD, PDF and Office documents",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm run dev --workspace @docuview/api",
+    "dev:web": "npm run dev --workspace @docuview/web",
+    "build": "npm run build --workspace @docuview/shared && npm run build --workspace @docuview/api && npm run build --workspace @docuview/web",
+    "start": "concurrently -n api,web -c cyan,magenta \"npm:start:api\" \"npm:start:web\"",
+    "start:api": "npm run start --workspace @docuview/api",
+    "start:web": "npm run start --workspace @docuview/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspace @docuview/api",
+    "test:e2e": "npm run test:e2e --workspace @docuview/web",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/web/.next apps/api/dist packages/shared/dist",
+    "predev": "npm run build --workspace @docuview/shared",
+    "prestart": "npm run build --workspace @docuview/shared"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}

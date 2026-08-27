@@ -1,0 +1,446 @@
+import type { FormatDescriptor } from './types.js';
+
+/**
+ * The single source of truth for format support.
+ *
+ * Rules for editing this file:
+ *  - `support: 'full'` is only allowed for formats that were actually opened
+ *    end to end with a real file.
+ *  - `support: 'conversion'` means the pipeline depends on an external engine
+ *    (LibreOffice, a DWG converter). The UI tells the user when it is missing.
+ *  - `support: 'planned'` means the format is *recognised* but not rendered.
+ *    The UI must never pretend otherwise.
+ */
+export const FORMATS: FormatDescriptor[] = [
+  /* ------------------------------- CAD 3D -------------------------------- */
+  {
+    id: 'step',
+    label: 'STEP',
+    kind: 'cad',
+    extensions: ['step', 'stp'],
+    mimeTypes: ['application/step', 'application/STEP', 'model/step', 'application/x-step'],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'cad-occt',
+    note: 'B-Rep tessellated server side by OpenCascade; assembly tree preserved.',
+    group: 'CAD',
+  },
+  {
+    id: 'iges',
+    label: 'IGES',
+    kind: 'cad',
+    extensions: ['iges', 'igs'],
+    mimeTypes: ['model/iges', 'application/iges'],
+    pipeline: 'server',
+    support: 'partial',
+    processor: 'cad-occt',
+    note: 'Surfaces are tessellated; free-standing curves are not rendered.',
+    group: 'CAD',
+  },
+  {
+    id: 'brep',
+    label: 'BREP',
+    kind: 'cad',
+    extensions: ['brep', 'brp'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'server',
+    support: 'partial',
+    processor: 'cad-occt',
+    note: 'Native OpenCascade shape format.',
+    group: 'CAD',
+  },
+  {
+    id: 'dxf',
+    label: 'DXF',
+    kind: 'cad',
+    extensions: ['dxf'],
+    mimeTypes: ['application/dxf', 'image/vnd.dxf', 'application/x-dxf'],
+    pipeline: 'client',
+    support: 'partial',
+    processor: null,
+    note: '2D entities (lines, arcs, polylines, circles, splines, blocks, text anchors).',
+    group: 'CAD',
+  },
+  {
+    id: 'dwg',
+    label: 'DWG',
+    kind: 'cad',
+    extensions: ['dwg'],
+    mimeTypes: ['application/acad', 'image/vnd.dwg', 'application/x-dwg'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'cad-dwg',
+    note: 'Needs an external DWG→DXF converter (ODA File Converter or LibreDWG).',
+    group: 'CAD',
+  },
+
+  /* ------------------------------ Mesh / 3D ------------------------------ */
+  {
+    id: 'stl',
+    label: 'STL',
+    kind: 'cad',
+    extensions: ['stl'],
+    mimeTypes: ['model/stl', 'application/sla', 'application/vnd.ms-pki.stl'],
+    pipeline: 'client',
+    support: 'full',
+    processor: null,
+    note: 'Binary and ASCII, parsed in a worker.',
+    group: '3D',
+  },
+  {
+    id: 'obj',
+    label: 'OBJ',
+    kind: 'cad',
+    extensions: ['obj'],
+    mimeTypes: ['model/obj', 'text/plain'],
+    pipeline: 'client',
+    support: 'full',
+    processor: null,
+    note: 'Groups become tree nodes. External .mtl files are not fetched.',
+    group: '3D',
+  },
+  {
+    id: 'ply',
+    label: 'PLY',
+    kind: 'cad',
+    extensions: ['ply'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'client',
+    support: 'partial',
+    processor: null,
+    group: '3D',
+  },
+  {
+    id: 'gltf',
+    label: 'glTF / GLB',
+    kind: 'cad',
+    extensions: ['gltf', 'glb'],
+    mimeTypes: ['model/gltf+json', 'model/gltf-binary'],
+    pipeline: 'client',
+    support: 'full',
+    processor: null,
+    note: 'Self-contained files only (embedded or binary buffers).',
+    group: '3D',
+  },
+  {
+    id: '3mf',
+    label: '3MF',
+    kind: 'cad',
+    extensions: ['3mf'],
+    mimeTypes: ['model/3mf', 'application/vnd.ms-3mfdocument'],
+    pipeline: 'client',
+    support: 'partial',
+    processor: null,
+    group: '3D',
+  },
+  {
+    id: 'fbx',
+    label: 'FBX',
+    kind: 'cad',
+    extensions: ['fbx'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'client',
+    support: 'partial',
+    processor: null,
+    note: 'Binary FBX 7.x. Animation and advanced materials are ignored.',
+    group: '3D',
+  },
+  {
+    id: 'dae',
+    label: 'COLLADA',
+    kind: 'cad',
+    extensions: ['dae'],
+    mimeTypes: ['model/vnd.collada+xml'],
+    pipeline: 'client',
+    support: 'partial',
+    processor: null,
+    group: '3D',
+  },
+
+  /* --------------------- Recognised but not rendered --------------------- */
+  {
+    id: 'sldprt',
+    label: 'SolidWorks',
+    kind: 'cad',
+    extensions: ['sldprt', 'sldasm'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'Proprietary. Export to STEP or 3MF for now.',
+    group: 'CAD',
+  },
+  {
+    id: 'inventor',
+    label: 'Inventor',
+    kind: 'cad',
+    extensions: ['ipt', 'iam'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'Proprietary. Export to STEP for now.',
+    group: 'CAD',
+  },
+  {
+    id: 'catia',
+    label: 'CATIA',
+    kind: 'cad',
+    extensions: ['catpart', 'catproduct', 'cgr'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'Proprietary. Export to STEP for now.',
+    group: 'CAD',
+  },
+  {
+    id: 'parasolid',
+    label: 'Parasolid',
+    kind: 'cad',
+    extensions: ['x_t', 'x_b', 'xmt_txt', 'xmt_bin'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'Requires a licensed Parasolid kernel.',
+    group: 'CAD',
+  },
+  {
+    id: 'jt',
+    label: 'JT',
+    kind: 'cad',
+    extensions: ['jt'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    group: 'CAD',
+  },
+  {
+    id: 'ifc',
+    label: 'IFC',
+    kind: 'cad',
+    extensions: ['ifc'],
+    mimeTypes: ['application/x-step'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'BIM support is scheduled for stage 2 (web-ifc).',
+    group: 'CAD',
+  },
+  {
+    id: 'rvt',
+    label: 'Revit',
+    kind: 'cad',
+    extensions: ['rvt', 'rfa'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'unsupported',
+    support: 'planned',
+    processor: null,
+    note: 'Proprietary. Export to IFC for now.',
+    group: 'CAD',
+  },
+
+  /* --------------------------------- PDF --------------------------------- */
+  {
+    id: 'pdf',
+    label: 'PDF',
+    kind: 'pdf',
+    extensions: ['pdf'],
+    mimeTypes: ['application/pdf'],
+    pipeline: 'client',
+    support: 'full',
+    processor: null,
+    note: 'Rendered by PDF.js directly from the stored file.',
+    group: 'PDF',
+  },
+
+  /* -------------------------------- Office ------------------------------- */
+  {
+    id: 'docx',
+    label: 'DOCX',
+    kind: 'office',
+    extensions: ['docx'],
+    mimeTypes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'office-word',
+    note: 'Text, headings, lists, tables and inline images. Optional exact page view via LibreOffice.',
+    group: 'Word',
+  },
+  {
+    id: 'doc',
+    label: 'DOC',
+    kind: 'office',
+    extensions: ['doc'],
+    mimeTypes: ['application/msword'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-word',
+    note: 'Converted by LibreOffice.',
+    group: 'Word',
+  },
+  {
+    id: 'rtf',
+    label: 'RTF',
+    kind: 'office',
+    extensions: ['rtf'],
+    mimeTypes: ['application/rtf', 'text/rtf'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-word',
+    note: 'Converted by LibreOffice.',
+    group: 'Word',
+  },
+  {
+    id: 'odt',
+    label: 'ODT',
+    kind: 'office',
+    extensions: ['odt'],
+    mimeTypes: ['application/vnd.oasis.opendocument.text'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-word',
+    note: 'Converted by LibreOffice.',
+    group: 'Word',
+  },
+  {
+    id: 'xlsx',
+    label: 'XLSX',
+    kind: 'office',
+    extensions: ['xlsx', 'xlsm'],
+    mimeTypes: [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel.sheet.macroEnabled.12',
+    ],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'office-sheet',
+    note: 'All sheets, merged cells, number formats and basic styling. Macros are never executed.',
+    group: 'Excel',
+  },
+  {
+    id: 'xls',
+    label: 'XLS',
+    kind: 'office',
+    extensions: ['xls'],
+    mimeTypes: ['application/vnd.ms-excel'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-sheet',
+    note: 'Converted to XLSX by LibreOffice first.',
+    group: 'Excel',
+  },
+  {
+    id: 'ods',
+    label: 'ODS',
+    kind: 'office',
+    extensions: ['ods'],
+    mimeTypes: ['application/vnd.oasis.opendocument.spreadsheet'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-sheet',
+    note: 'Converted to XLSX by LibreOffice first.',
+    group: 'Excel',
+  },
+  {
+    id: 'csv',
+    label: 'CSV',
+    kind: 'office',
+    extensions: ['csv', 'tsv'],
+    mimeTypes: ['text/csv', 'text/tab-separated-values'],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'office-sheet',
+    group: 'Excel',
+  },
+  {
+    id: 'pptx',
+    label: 'PPTX',
+    kind: 'office',
+    extensions: ['pptx'],
+    mimeTypes: ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'office-slides',
+    note: 'Rendered through LibreOffice for layout fidelity; a native OOXML fallback is used when LibreOffice is absent.',
+    group: 'PowerPoint',
+  },
+  {
+    id: 'ppt',
+    label: 'PPT',
+    kind: 'office',
+    extensions: ['ppt'],
+    mimeTypes: ['application/vnd.ms-powerpoint'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-slides',
+    note: 'Converted by LibreOffice.',
+    group: 'PowerPoint',
+  },
+  {
+    id: 'odp',
+    label: 'ODP',
+    kind: 'office',
+    extensions: ['odp'],
+    mimeTypes: ['application/vnd.oasis.opendocument.presentation'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'office-slides',
+    note: 'Converted by LibreOffice.',
+    group: 'PowerPoint',
+  },
+  {
+    id: 'txt',
+    label: 'Plain text',
+    kind: 'office',
+    extensions: ['txt', 'md', 'log'],
+    mimeTypes: ['text/plain', 'text/markdown'],
+    pipeline: 'server',
+    support: 'full',
+    processor: 'office-word',
+    group: 'Word',
+  },
+
+  /* -------------------------------- Images ------------------------------- */
+  {
+    id: 'image',
+    label: 'Image',
+    kind: 'image',
+    extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'],
+    mimeTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/svg+xml'],
+    pipeline: 'client',
+    support: 'full',
+    processor: null,
+    group: 'Image',
+  },
+];
+
+const BY_EXTENSION = new Map<string, FormatDescriptor>();
+for (const format of FORMATS) {
+  for (const ext of format.extensions) BY_EXTENSION.set(ext, format);
+}
+
+const BY_ID = new Map(FORMATS.map((f) => [f.id, f]));
+
+export function formatByExtension(ext: string): FormatDescriptor | undefined {
+  return BY_EXTENSION.get(ext.replace(/^\./, '').toLowerCase());
+}
+
+export function formatById(id: string): FormatDescriptor | undefined {
+  return BY_ID.get(id);
+}
+
+/** Every extension the upload control should accept, as `.ext` strings. */
+export const ACCEPTED_EXTENSIONS: string[] = [...BY_EXTENSION.keys()].map((e) => `.${e}`).sort();
+
+/** Extensions that actually render today (used for the "supported" copy). */
+export const RENDERABLE_EXTENSIONS: string[] = FORMATS.filter((f) => f.pipeline !== 'unsupported')
+  .flatMap((f) => f.extensions)
+  .map((e) => `.${e}`)
+  .sort();
+
+export function isRenderable(format: FormatDescriptor): boolean {
+  return format.pipeline !== 'unsupported';
+}

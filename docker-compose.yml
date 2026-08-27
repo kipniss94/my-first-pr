@@ -1,0 +1,27 @@
+services:
+  docuview:
+    build: .
+    image: docuview:stage1
+    ports:
+      - '3000:3000' # web app
+      - '4000:4000' # API (only needed if you call it directly)
+    environment:
+      # Change this to the address people will actually use, so metadata,
+      # robots.txt and sitemap.xml point somewhere real.
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+      MAX_UPLOAD_MB: 250
+      RETENTION_MINUTES: 60
+      PROCESSING_CONCURRENCY: 2
+      # Uncomment once a DWG converter is available inside the image.
+      # DWG_CONVERTER_CMD: /usr/bin/dwg2dxf -o {output} {input}
+    volumes:
+      - docuview-data:/data
+    restart: unless-stopped
+    # LibreOffice and the CAD tessellator are memory hungry; give them room.
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+volumes:
+  docuview-data:

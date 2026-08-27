@@ -1,0 +1,29 @@
+node_modules/
+.next/
+dist/
+out/
+*.tsbuildinfo
+
+# Uploaded documents and everything derived from them. Never commit these.
+data/
+
+# Generated test documents (`npm run fixtures` recreates them).
+fixtures/
+
+# Copied from node_modules by the predev/prebuild step, never edited by hand.
+apps/web/public/pdf.worker.min.mjs
+
+# Playwright output
+test-results/
+playwright-report/
+blob-report/
+
+.env
+.env.local
+.env.*.local
+
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/

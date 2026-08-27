@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+data
+fixtures
+test-results
+playwright-report
+.git
+.env
+*.log
