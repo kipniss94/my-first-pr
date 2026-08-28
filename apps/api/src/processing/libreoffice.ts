@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ProcessingError } from './context.js';
 
 export interface ConvertOptions {
@@ -37,7 +38,9 @@ export async function libreOfficeConvert(options: ConvertOptions): Promise<strin
   await fs.mkdir(options.outDir, { recursive: true });
 
   const args = [
-    `-env:UserInstallation=file://${profileDir}`,
+    // `pathToFileURL` rather than a string template: on Windows the raw path
+    // is `C:\\Users\\...`, and `file://C:\\...` is not a URL LibreOffice accepts.
+    `-env:UserInstallation=${pathToFileURL(profileDir).href}`,
     '--headless',
     '--norestore',
     '--nolockcheck',

@@ -13,16 +13,21 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { StepBuilder, boxFaces, hollowBoxFaces } from './step-builder.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outDir = path.resolve(root, process.argv[2] ?? 'fixtures');
 
-const SOFFICE = ['/usr/bin/soffice', '/usr/local/bin/soffice', '/Applications/LibreOffice.app/Contents/MacOS/soffice'].find(
-  (candidate) => existsSync(candidate),
-);
+const SOFFICE = [
+  process.env.LIBREOFFICE_BIN,
+  '/usr/bin/soffice',
+  '/usr/local/bin/soffice',
+  '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+  'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+  'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe',
+].find((candidate) => candidate && existsSync(candidate));
 
 /* ---------------------------------- STEP ---------------------------------- */
 
@@ -361,7 +366,7 @@ async function convert(sourceName, source, target, finalName) {
   await execFileAsync(
     SOFFICE,
     [
-      `-env:UserInstallation=file://${path.join(work, 'profile')}`,
+      `-env:UserInstallation=${pathToFileURL(path.join(work, 'profile')).href}`,
       '--headless',
       '--norestore',
       '--convert-to',

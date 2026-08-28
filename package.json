@@ -20,7 +20,7 @@
     "test": "npm run test --workspace @docuview/api",
     "test:e2e": "npm run test:e2e --workspace @docuview/web",
     "fixtures": "node scripts/make-fixtures.mjs",
-    "clean": "rm -rf node_modules apps/*/node_modules packages/*/node_modules apps/web/.next apps/api/dist packages/shared/dist",
+    "clean": "node -e \"for (const p of ['node_modules','apps/web/node_modules','apps/api/node_modules','packages/shared/node_modules','apps/web/.next','apps/api/dist','packages/shared/dist']) require('fs').rmSync(p,{recursive:true,force:true})\"",
     "predev": "npm run build --workspace @docuview/shared",
     "prestart": "npm run build --workspace @docuview/shared"
   },
