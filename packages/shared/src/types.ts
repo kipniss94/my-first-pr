@@ -15,8 +15,14 @@ export type DocumentKind = 'cad' | 'pdf' | 'office' | 'image' | 'unknown';
  */
 export type PipelineKind = 'client' | 'server' | 'unsupported';
 
-/** Truthful support level, surfaced verbatim in the UI and in the docs. */
-export type SupportLevel = 'full' | 'partial' | 'conversion' | 'planned';
+/**
+ * Truthful support level, surfaced verbatim in the UI and in the docs.
+ *
+ * `preview` is the honest label for a proprietary format we open from the image
+ * its own CAD system stored inside the file: the document is genuinely shown,
+ * but there is no geometry behind it to measure or section.
+ */
+export type SupportLevel = 'full' | 'partial' | 'conversion' | 'preview' | 'planned';
 
 export interface FormatDescriptor {
   /** Stable machine id, e.g. `step`. */
@@ -99,6 +105,11 @@ export interface JobState {
   format: DetectedFormat | null;
   result: JobResult | null;
   error: JobError | null;
+  /**
+   * Component resolution for an assembly. Present only once the document turned
+   * out to reference other files; the viewer builds the model as they arrive.
+   */
+  assembly: AssemblyState | null;
   /** Expiry of the stored file, ISO timestamp. */
   expiresAt: string;
 }
@@ -120,6 +131,7 @@ export type ViewerId =
   | 'cad-mesh' // three.js scene fed from a normalized geometry document
   | 'cad-nmg' // server-normalized geometry (STEP/IGES/BREP)
   | 'cad-dxf' // 2D DXF vector viewer
+  | 'cad-preview' // native CAD opened from its stored preview and properties
   | 'pdf'
   | 'office-word'
   | 'office-sheet'
@@ -304,5 +316,56 @@ export interface CapabilitiesResponse {
   libreOffice: boolean;
   /** Whether an external DWG converter has been configured. */
   dwgConverter: boolean;
+  /**
+   * Whether a licensed native-CAD converter is configured. When false,
+   * SolidWorks/Inventor/CATIA files open as their stored preview, and the UI
+   * says so rather than implying measurable geometry.
+   */
+  cadConverter: boolean;
   formats: FormatDescriptor[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Native (proprietary) CAD                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** What a component of an assembly is doing right now. */
+export type ComponentStatus = 'missing' | 'pending' | 'ready' | 'failed';
+
+export interface AssemblyComponent {
+  /** File name exactly as the assembly refers to it. */
+  name: string;
+  status: ComponentStatus;
+  /** Job that is preparing this component, once one has been supplied. */
+  jobId: string | null;
+  fileId: string | null;
+}
+
+export interface AssemblyState {
+  /** `assembly` once the document turned out to reference other files. */
+  role: NativeCadRole;
+  components: AssemblyComponent[];
+  updatedAt: string;
+}
+
+export type NativeCadRole = 'part' | 'assembly' | 'drawing' | 'unknown';
+
+/**
+ * A proprietary CAD document opened without its vendor kernel.
+ *
+ * `geometry` says plainly what is behind the picture: `preview-only` means the
+ * stored preview image, with no solid to measure. When a server-side converter
+ * is configured the document never reaches this shape at all — it goes through
+ * the normal STEP path instead.
+ */
+export interface NativeCadDocument {
+  application: string;
+  version: string | null;
+  role: NativeCadRole;
+  preview: { url: string; width: number; height: number; contentType: string } | null;
+  properties: { name: string; value: string }[];
+  components: AssemblyComponent[];
+  geometry: 'preview-only';
+  /** One paragraph, shown verbatim in the viewer. */
+  note: string;
 }

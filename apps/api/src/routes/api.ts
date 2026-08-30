@@ -7,7 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { ACCEPTED_EXTENSIONS, FORMATS, formatById, type CapabilitiesResponse } from '@docuview/shared';
 import { config, tmpDir } from '../config.js';
 import { logger } from '../logger.js';
-import { JobQueue } from '../jobs/queue.js';
+import { JobQueue, type JobRecord } from '../jobs/queue.js';
 import { buildRenditionRequest, executeProcessRequest, runPipeline } from '../processing/pipeline.js';
 import {
   assetPath,
@@ -82,6 +82,7 @@ api.get('/capabilities', (_req: Request, res: Response) => {
     retentionSeconds: config.retentionSeconds,
     libreOffice: Boolean(config.libreOfficeBin),
     dwgConverter: Boolean(config.dwgConverterCmd),
+    cadConverter: Boolean(config.cadConverterCmd),
     formats: FORMATS,
   };
   res.set('Cache-Control', 'public, max-age=300');
@@ -91,90 +92,71 @@ api.get('/capabilities', (_req: Request, res: Response) => {
 /* -------------------------------- uploads --------------------------------- */
 
 api.post('/uploads', uploadLimiter, (req: Request, res: Response) => {
-  upload.single('file')(req, res, async (err: unknown) => {
-    if (err) {
-      await cleanupTemp(req);
-      if (err instanceof UploadRejected) {
-        res.status(415).json({
-          error: {
-            code: 'unsupported_extension',
-            message: err.message,
-            hint: 'Supported formats are listed on the home page.',
-            retryable: false,
-          },
-        });
-        return;
-      }
-      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-        res.status(413).json({
-          error: {
-            code: 'file_too_large',
-            message: `This file is larger than the ${Math.round(config.maxUploadBytes / 1048576)} MB limit.`,
-            hint: 'Try a compressed or simplified export.',
-            retryable: false,
-          },
-        });
-        return;
-      }
-      logger.error({ err }, 'upload failed');
-      res.status(400).json({
-        error: { code: 'upload_failed', message: "We couldn't receive this file.", retryable: true },
-      });
-      return;
-    }
+  receiveUpload(req, res, (stored) => {
+    const job = queue.enqueue({
+      fileId: stored.fileId,
+      fileName: stored.meta.displayName,
+      size: stored.meta.size,
+      expiresAt: stored.meta.expiresAt,
+    });
+    logger.info({ fileId: stored.fileId, jobId: job.id, size: stored.meta.size }, 'upload accepted');
+    res.status(202).json({ fileId: stored.fileId, jobId: job.id, job: job.toState() });
+  });
+});
 
-    const file = req.file;
-    if (!file) {
-      res.status(400).json({
-        error: { code: 'no_file', message: 'No file was received.', retryable: true },
-      });
-      return;
-    }
+/**
+ * Supply one component of an assembly that is waiting for its parts.
+ *
+ * Each component becomes an ordinary job, so it is detected, processed and
+ * cached exactly like a standalone upload — which is what lets the viewer draw
+ * the assembly piece by piece as the files arrive, rather than waiting for the
+ * whole set.
+ */
+api.post('/jobs/:jobId/components', uploadLimiter, (req: Request, res: Response) => {
+  const parent = queue.get(param(req, 'jobId'));
+  if (!parent || !parent.assembly) {
+    void cleanupTemp(req);
+    res.status(404).json({
+      error: {
+        code: 'assembly_not_found',
+        message: 'This assembly is no longer open.',
+        hint: 'Open the assembly again and re-add its components.',
+        retryable: false,
+      },
+    });
+    return;
+  }
 
-    if (file.size === 0) {
-      await fs.rm(file.path, { force: true });
-      res.status(400).json({
-        error: { code: 'empty_file', message: 'This file is empty.', retryable: false },
-      });
-      return;
-    }
-
-    const fileId = newFileId();
-    const displayName = sanitizeDisplayName(file.originalname);
-    const now = Date.now();
-    const meta: FileMeta = {
-      fileId,
-      displayName,
-      extension: extensionOf(displayName),
-      size: file.size,
-      declaredMime: String(file.mimetype ?? '').slice(0, 120),
-      createdAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + config.retentionSeconds * 1000).toISOString(),
-    };
-
-    try {
-      await createFileDir(fileId);
-      await moveFile(file.path, originalPath(fileId));
-      await writeMeta(meta);
-    } catch (moveErr) {
-      logger.error({ err: moveErr }, 'failed to store upload');
-      await fs.rm(file.path, { force: true }).catch(() => undefined);
-      await removeFile(fileId).catch(() => undefined);
-      res.status(500).json({
-        error: { code: 'storage_failed', message: "We couldn't store this file.", retryable: true },
-      });
-      return;
-    }
+  receiveUpload(req, res, (stored) => {
+    const assembly = parent.assembly;
+    if (!assembly) return;
 
     const job = queue.enqueue({
-      fileId,
-      fileName: displayName,
-      size: file.size,
-      expiresAt: meta.expiresAt,
+      fileId: stored.fileId,
+      fileName: stored.meta.displayName,
+      size: stored.meta.size,
+      expiresAt: stored.meta.expiresAt,
     });
-    logger.info({ fileId, jobId: job.id, size: file.size, name: displayName }, 'upload accepted');
 
-    res.status(202).json({ fileId, jobId: job.id, job: job.toState() });
+    // Match on the name the assembly asked for. A file nobody asked for is
+    // still accepted and appended: our reference scan can miss a component,
+    // and refusing a part the user knows belongs here would be wrong.
+    const wanted = stored.meta.displayName.toLowerCase();
+    const existing = assembly.components.find((component) => component.name.toLowerCase() === wanted);
+    const component = existing ?? { name: stored.meta.displayName, status: 'missing' as const, jobId: null, fileId: null };
+    if (!existing) assembly.components.push(component);
+
+    component.status = 'pending';
+    component.jobId = job.id;
+    component.fileId = stored.fileId;
+    assembly.updatedAt = new Date().toISOString();
+    queue.notify(parent);
+
+    logger.info(
+      { parentJobId: parent.id, jobId: job.id, component: component.name, matched: Boolean(existing) },
+      'assembly component received',
+    );
+    res.status(202).json({ fileId: stored.fileId, jobId: job.id, job: job.toState(), assembly });
   });
 });
 
@@ -193,6 +175,7 @@ api.get('/jobs/:jobId', (req: Request, res: Response) => {
     });
     return;
   }
+  syncAssembly(job);
   res.set('Cache-Control', 'no-store');
   res.json(job.toState());
 });
@@ -341,6 +324,123 @@ api.delete('/files/:fileId', async (req: Request, res: Response) => {
 });
 
 /* -------------------------------- helpers --------------------------------- */
+
+interface StoredUpload {
+  fileId: string;
+  meta: FileMeta;
+}
+
+/**
+ * Receive one multipart file, store it under a generated name, and hand it to
+ * the caller. Shared by plain uploads and by assembly components so both get
+ * the same size, extension and storage guarantees.
+ */
+function receiveUpload(req: Request, res: Response, done: (stored: StoredUpload) => void): void {
+  upload.single('file')(req, res, async (err: unknown) => {
+    if (err) {
+      await cleanupTemp(req);
+      if (err instanceof UploadRejected) {
+        res.status(415).json({
+          error: {
+            code: 'unsupported_extension',
+            message: err.message,
+            hint: 'Supported formats are listed on the home page.',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+        res.status(413).json({
+          error: {
+            code: 'file_too_large',
+            message: `This file is larger than the ${Math.round(config.maxUploadBytes / 1048576)} MB limit.`,
+            hint: 'Try a compressed or simplified export.',
+            retryable: false,
+          },
+        });
+        return;
+      }
+      logger.error({ err }, 'upload failed');
+      res.status(400).json({
+        error: { code: 'upload_failed', message: "We couldn't receive this file.", retryable: true },
+      });
+      return;
+    }
+
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: { code: 'no_file', message: 'No file was received.', retryable: true } });
+      return;
+    }
+    if (file.size === 0) {
+      await fs.rm(file.path, { force: true });
+      res.status(400).json({ error: { code: 'empty_file', message: 'This file is empty.', retryable: false } });
+      return;
+    }
+
+    const fileId = newFileId();
+    const displayName = sanitizeDisplayName(file.originalname);
+    const now = Date.now();
+    const meta: FileMeta = {
+      fileId,
+      displayName,
+      extension: extensionOf(displayName),
+      size: file.size,
+      declaredMime: String(file.mimetype ?? '').slice(0, 120),
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + config.retentionSeconds * 1000).toISOString(),
+    };
+
+    try {
+      await createFileDir(fileId);
+      await moveFile(file.path, originalPath(fileId));
+      await writeMeta(meta);
+    } catch (moveErr) {
+      logger.error({ err: moveErr }, 'failed to store upload');
+      await fs.rm(file.path, { force: true }).catch(() => undefined);
+      await removeFile(fileId).catch(() => undefined);
+      res.status(500).json({
+        error: { code: 'storage_failed', message: "We couldn't store this file.", retryable: true },
+      });
+      return;
+    }
+
+    done({ fileId, meta });
+  });
+}
+
+/**
+ * Fold each component job's outcome back into its assembly.
+ *
+ * Doing it on read rather than through an event subscription keeps the queue
+ * unaware of assemblies, and a component job that expired simply reads as
+ * missing again.
+ */
+function syncAssembly(job: JobRecord): void {
+  const assembly = job.assembly;
+  if (!assembly) return;
+
+  let changed = false;
+  for (const component of assembly.components) {
+    if (!component.jobId) continue;
+    const child = queue.get(component.jobId);
+    const next =
+      !child ? 'missing'
+      : child.status === 'succeeded' ? 'ready'
+      : child.status === 'failed' || child.status === 'cancelled' ? 'failed'
+      : 'pending';
+    if (next !== component.status) {
+      component.status = next;
+      if (next === 'missing') {
+        component.jobId = null;
+        component.fileId = null;
+      }
+      changed = true;
+    }
+  }
+  if (changed) assembly.updatedAt = new Date().toISOString();
+}
 
 /** Express 5 types a route param as `string | string[]`; ours are always single. */
 function param(req: Request, name: string): string {

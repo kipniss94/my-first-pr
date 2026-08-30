@@ -42,7 +42,7 @@ export function SiteHeader() {
             </Link>
           ))}
         </nav>
-        <Link href="/#upload" className="btn btn-primary">
+        <Link href="/" className="btn btn-primary">
           Open a file
         </Link>
       </div>

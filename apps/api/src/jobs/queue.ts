@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import type { JobError, JobResult, JobStage, JobState, JobStatus } from '@docuview/shared';
+import type { AssemblyState, JobError, JobResult, JobStage, JobState, JobStatus } from '@docuview/shared';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
 
@@ -27,6 +27,11 @@ export class JobRecord {
   format: JobState['format'] = null;
   result: JobResult | null = null;
   error: JobError | null = null;
+  /**
+   * Component resolution, attached once the document turns out to be an
+   * assembly that references files we do not have yet.
+   */
+  assembly: AssemblyState | null = null;
   /** Set when the client cancels; the runner checks it between steps. */
   cancelled = false;
   /** Handle to the processing child process, so cancel can kill it. */
@@ -48,6 +53,7 @@ export class JobRecord {
       format: this.format,
       result: this.result,
       error: this.error,
+      assembly: this.assembly,
       expiresAt: this.input.expiresAt,
     };
   }
@@ -95,6 +101,11 @@ export class JobQueue extends EventEmitter {
     if (index >= 0) this.waiting.splice(index, 1);
     this.finish(job, 'cancelled');
     return true;
+  }
+
+  /** Publish a change made outside `run`, such as an assembly component arriving. */
+  notify(job: JobRecord): void {
+    this.touch(job);
   }
 
   /** Drop bookkeeping for a file that has been deleted. */

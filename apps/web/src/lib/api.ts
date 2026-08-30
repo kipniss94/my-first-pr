@@ -1,4 +1,4 @@
-import type { CapabilitiesResponse, JobError, JobState, UploadResponse } from '@docuview/shared';
+import type { AssemblyState, CapabilitiesResponse, JobError, JobState, UploadResponse } from '@docuview/shared';
 
 /**
  * Empty by default: the browser calls `/api/v1/...` on its own origin and Next
@@ -71,11 +71,33 @@ export interface UploadHandle {
   abort(): void;
 }
 
+/** What the server returns when an assembly component is supplied. */
+export interface ComponentUploadResponse extends UploadResponse {
+  assembly: AssemblyState;
+}
+
+/**
+ * Send one component of an assembly. It becomes an ordinary job, so the viewer
+ * can watch it and draw the part the moment it is ready.
+ */
+export function uploadComponent(
+  parentJobId: string,
+  file: File,
+  onProgress: (loaded: number, total: number) => void = () => undefined,
+): { promise: Promise<ComponentUploadResponse>; abort(): void } {
+  const handle = uploadTo(`/api/v1/jobs/${parentJobId}/components`, file, onProgress);
+  return { promise: handle.promise as Promise<ComponentUploadResponse>, abort: handle.abort };
+}
+
 /**
  * Uploads via XHR rather than `fetch` because upload progress events are the
  * only honest way to fill the "Uploading" stage — `fetch` cannot report them.
  */
 export function uploadFile(file: File, onProgress: (loaded: number, total: number) => void): UploadHandle {
+  return uploadTo('/api/v1/uploads', file, onProgress);
+}
+
+function uploadTo(path: string, file: File, onProgress: (loaded: number, total: number) => void): UploadHandle {
   const xhr = new XMLHttpRequest();
   const promise = new Promise<UploadResponse>((resolve, reject) => {
     const form = new FormData();
@@ -121,7 +143,7 @@ export function uploadFile(file: File, onProgress: (loaded: number, total: numbe
       reject(new ApiError({ code: 'cancelled', message: 'Upload cancelled.', retryable: true })),
     );
 
-    xhr.open('POST', apiUrl('/api/v1/uploads'));
+    xhr.open('POST', apiUrl(path));
     xhr.responseType = 'text';
     xhr.send(form);
   });

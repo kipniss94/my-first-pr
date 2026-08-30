@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { captureCanvas } from '@/lib/thumbnail';
 import { findEdgeAtPoint, faceIndexForTriangle, snapToVertex } from './geometry';
 import { SectionController } from './section';
 import type { CadModel, CadPart, DisplayMode, MeasurementRecord, StandardView, ToolMode } from './types';
@@ -155,8 +156,16 @@ export class CadScene {
 
   /* -------------------------------- model --------------------------------- */
 
-  setModel(model: CadModel): void {
-    this.clearModel();
+  /**
+   * Show a model, replacing whatever was there.
+   *
+   * `disposePrevious` is false while an assembly is being built: the caller
+   * still owns those component models and merges them again each time a new
+   * part arrives, so their buffers must survive the swap. It disposes them
+   * itself once the document is closed.
+   */
+  setModel(model: CadModel, disposePrevious = true): void {
+    this.clearModel(disposePrevious);
     this.model = model;
     this.scene.add(model.root);
 
@@ -203,7 +212,7 @@ export class CadScene {
     this.requestRender();
   }
 
-  private clearModel(): void {
+  private clearModel(dispose = true): void {
     this.clearMeasurements();
     this.clearSelection();
     this.section.clear();
@@ -219,7 +228,7 @@ export class CadScene {
 
     if (this.model) {
       this.model.root.removeFromParent();
-      disposeObject(this.model.root);
+      if (dispose) disposeObject(this.model.root);
       this.model = null;
     }
     if (this.boxHelper) {
@@ -834,10 +843,18 @@ export class CadScene {
     }
   };
 
-  /** Current canvas as a PNG data URL, used by the snapshot button. */
-  snapshot(): string {
+  /**
+   * Current canvas as a PNG data URL.
+   *
+   * Full resolution for the snapshot button, which is meant to be saved; the
+   * workspace card passes `maxEdge` so a wall of tiles does not cost megabytes
+   * of cached bitmaps.
+   */
+  snapshot(maxEdge?: number): string {
     this.renderer.render(this.scene, this.camera);
-    return this.renderer.domElement.toDataURL('image/png');
+    const canvas = this.renderer.domElement;
+    if (!maxEdge || Math.max(canvas.width, canvas.height) <= maxEdge) return canvas.toDataURL('image/png');
+    return captureCanvas(canvas, maxEdge) ?? canvas.toDataURL('image/png');
   }
 
   dispose(): void {
@@ -877,7 +894,7 @@ function formatValue(value: number, unit: string): string {
   return `${value.toFixed(1)} ${unit}`;
 }
 
-function disposeObject(object: THREE.Object3D): void {
+export function disposeObject(object: THREE.Object3D): void {
   object.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (mesh.geometry) mesh.geometry.dispose();

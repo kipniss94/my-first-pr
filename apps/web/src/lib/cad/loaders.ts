@@ -336,3 +336,117 @@ function buildTreeFromObject(
   const rootId = walk(root, null, 0);
   return { parts, nodes, rootIds: rootId ? [rootId] : [] };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Merging several models into one scene                                      */
+/* -------------------------------------------------------------------------- */
+
+export interface MergeSource {
+  /** Label for the tree node this model hangs under. */
+  name: string;
+  model: CadModel;
+}
+
+/**
+ * Combine independently loaded models into a single `CadModel`.
+ *
+ * This is what lets an assembly appear piece by piece: every component that
+ * finishes processing is merged in and the scene is rebuilt, so the model grows
+ * as the files arrive instead of appearing only once the last one lands.
+ *
+ * Component *placement* is a separate matter. The transforms live in the
+ * assembly's own closed geometry, so unless a converter produced real assembly
+ * geometry we cannot know where each part belongs — the parts are laid out side
+ * by side instead of stacked at the origin, and the viewer says so.
+ */
+export function mergeModels(sources: MergeSource[], rootName: string, layout: 'row' | 'stack' = 'row'): CadModel {
+  const root = new THREE.Group();
+  root.name = rootName;
+
+  const parts: CadPart[] = [];
+  const nodes: CadTreeNode[] = [];
+  const rootNode: CadTreeNode = { id: 'root', name: rootName, parentId: null, childIds: [], partIds: [], depth: 0 };
+  nodes.push(rootNode);
+
+  let triangles = 0;
+  let vertices = 0;
+  let hasBrepFaces = false;
+  const warnings: string[] = [];
+  const units = sources[0]?.model.units ?? 'mm';
+  const producers = new Set<string>();
+
+  let cursorX = 0;
+  const gap = () => {
+    const spans = sources.map((source) => {
+      const box = new THREE.Box3().setFromObject(source.model.root);
+      return box.isEmpty() ? 0 : box.getSize(new THREE.Vector3()).x;
+    });
+    const widest = Math.max(0, ...spans);
+    return widest * 0.15 || 1;
+  };
+  const spacing = layout === 'row' ? gap() : 0;
+
+  sources.forEach((source, index) => {
+    const prefix = `c${index}:`;
+    const holder = new THREE.Group();
+    holder.name = source.name;
+    holder.add(source.model.root);
+
+    if (layout === 'row') {
+      const box = new THREE.Box3().setFromObject(source.model.root);
+      if (!box.isEmpty()) {
+        const size = box.getSize(new THREE.Vector3());
+        const centre = box.getCenter(new THREE.Vector3());
+        // Sit each component on the same origin plane, next to the last one.
+        holder.position.set(cursorX + size.x / 2 - centre.x, -box.min.y, -centre.z);
+        cursorX += size.x + spacing;
+      }
+    }
+    root.add(holder);
+
+    const holderNode: CadTreeNode = {
+      id: `${prefix}holder`,
+      name: source.name,
+      parentId: rootNode.id,
+      childIds: [],
+      partIds: [],
+      depth: 1,
+    };
+    nodes.push(holderNode);
+    rootNode.childIds.push(holderNode.id);
+
+    for (const node of source.model.nodes) {
+      nodes.push({
+        id: prefix + node.id,
+        name: node.name,
+        parentId: node.parentId === null ? holderNode.id : prefix + node.parentId,
+        childIds: node.childIds.map((child) => prefix + child),
+        partIds: node.partIds.map((part) => prefix + part),
+        depth: node.depth + 2,
+      });
+    }
+    for (const id of source.model.rootIds) holderNode.childIds.push(prefix + id);
+
+    for (const part of source.model.parts) {
+      parts.push({ ...part, id: prefix + part.id, nodeId: prefix + part.nodeId });
+      triangles += part.triangles;
+      vertices += part.vertices;
+    }
+
+    hasBrepFaces ||= source.model.hasBrepFaces;
+    producers.add(source.model.producer);
+    warnings.push(...source.model.warnings);
+  });
+
+  return {
+    root,
+    parts,
+    nodes,
+    rootIds: [rootNode.id],
+    units,
+    producer: [...producers].join(', ') || 'DocuView',
+    stats: { parts: parts.length, triangles, vertices },
+    warnings,
+    hasBrepFaces,
+  };
+}

@@ -157,17 +157,24 @@ export const FORMATS: FormatDescriptor[] = [
     group: '3D',
   },
 
-  /* --------------------- Recognised but not rendered --------------------- */
+  /* -------------------------- Native CAD formats -------------------------- */
+  /*
+   * These open directly, with no re-export step. Without a licensed converter
+   * on the server they open as the preview the CAD system stored inside the
+   * file, plus its document properties and — for an assembly — its component
+   * list; with `CAD_CONVERTER_CMD` configured they go through the STEP path and
+   * arrive as full geometry. `support: 'preview'` is the honest default.
+   */
   {
     id: 'sldprt',
     label: 'SolidWorks',
     kind: 'cad',
-    extensions: ['sldprt', 'sldasm'],
+    extensions: ['sldprt', 'sldasm', 'slddrw'],
     mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
-    note: 'Proprietary. Export to STEP or 3MF for now.',
+    pipeline: 'server',
+    support: 'preview',
+    processor: 'cad-proprietary',
+    note: 'Opens from the preview and properties stored in the file. Full geometry needs a server-side converter.',
     group: 'CAD',
   },
   {
@@ -176,10 +183,10 @@ export const FORMATS: FormatDescriptor[] = [
     kind: 'cad',
     extensions: ['ipt', 'iam'],
     mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
-    note: 'Proprietary. Export to STEP for now.',
+    pipeline: 'server',
+    support: 'preview',
+    processor: 'cad-proprietary',
+    note: 'Opens from the preview and properties stored in the file. Full geometry needs a server-side converter.',
     group: 'CAD',
   },
   {
@@ -188,22 +195,22 @@ export const FORMATS: FormatDescriptor[] = [
     kind: 'cad',
     extensions: ['catpart', 'catproduct', 'cgr'],
     mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
-    note: 'Proprietary. Export to STEP for now.',
+    pipeline: 'server',
+    support: 'preview',
+    processor: 'cad-proprietary',
+    note: 'Opens from the preview stored in the file. Full geometry needs a server-side converter.',
     group: 'CAD',
   },
   {
-    id: 'parasolid',
-    label: 'Parasolid',
+    id: 'rvt',
+    label: 'Revit',
     kind: 'cad',
-    extensions: ['x_t', 'x_b', 'xmt_txt', 'xmt_bin'],
+    extensions: ['rvt', 'rfa'],
     mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
-    note: 'Requires a licensed Parasolid kernel.',
+    pipeline: 'server',
+    support: 'preview',
+    processor: 'cad-proprietary',
+    note: 'Opens from the preview stored in the file. Export IFC for geometry (IFC is scheduled for stage 2).',
     group: 'CAD',
   },
   {
@@ -212,11 +219,26 @@ export const FORMATS: FormatDescriptor[] = [
     kind: 'cad',
     extensions: ['jt'],
     mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
+    pipeline: 'server',
+    support: 'preview',
+    processor: 'cad-proprietary',
+    note: 'Opens from the preview stored in the file. Tessellated JT geometry is scheduled for stage 2.',
     group: 'CAD',
   },
+  {
+    id: 'parasolid',
+    label: 'Parasolid',
+    kind: 'cad',
+    extensions: ['x_t', 'x_b', 'xmt_txt', 'xmt_bin'],
+    mimeTypes: ['application/octet-stream'],
+    pipeline: 'server',
+    support: 'conversion',
+    processor: 'cad-proprietary',
+    note: 'Geometry only, with no preview inside the file: needs a server-side converter.',
+    group: 'CAD',
+  },
+
+  /* --------------------- Recognised but not rendered --------------------- */
   {
     id: 'ifc',
     label: 'IFC',
@@ -227,18 +249,6 @@ export const FORMATS: FormatDescriptor[] = [
     support: 'planned',
     processor: null,
     note: 'BIM support is scheduled for stage 2 (web-ifc).',
-    group: 'CAD',
-  },
-  {
-    id: 'rvt',
-    label: 'Revit',
-    kind: 'cad',
-    extensions: ['rvt', 'rfa'],
-    mimeTypes: ['application/octet-stream'],
-    pipeline: 'unsupported',
-    support: 'planned',
-    processor: null,
-    note: 'Proprietary. Export to IFC for now.',
     group: 'CAD',
   },
 
@@ -434,6 +444,11 @@ export function formatById(id: string): FormatDescriptor | undefined {
 
 /** Every extension the upload control should accept, as `.ext` strings. */
 export const ACCEPTED_EXTENSIONS: string[] = [...BY_EXTENSION.keys()].map((e) => `.${e}`).sort();
+
+/** Formats that open with real, measurable geometry rather than a picture. */
+export function hasGeometry(format: FormatDescriptor): boolean {
+  return format.kind === 'cad' && format.support !== 'preview' && format.pipeline !== 'unsupported';
+}
 
 /** Extensions that actually render today (used for the "supported" copy). */
 export const RENDERABLE_EXTENSIONS: string[] = FORMATS.filter((f) => f.pipeline !== 'unsupported')

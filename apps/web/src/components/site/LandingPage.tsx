@@ -122,7 +122,7 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
               </div>
             ))}
           </dl>
-          <Link href="/#upload" className="btn btn-primary mt-8">
+          <Link href="/" className="btn btn-primary mt-8">
             Open a file now
           </Link>
         </section>

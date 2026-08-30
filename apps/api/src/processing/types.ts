@@ -13,6 +13,8 @@ export interface ProcessRequest {
   options: {
     libreOfficeBin: string | null;
     dwgConverterCmd: string | null;
+    /** Optional licensed converter for native CAD formats. */
+    cadConverterCmd: string | null;
     timeoutMs: number;
   };
 }

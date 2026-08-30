@@ -1,15 +1,18 @@
 import { expect, test } from '@playwright/test';
 import { dropFile, fixture, watchConsole } from './helpers';
 
-test.describe('landing pages', () => {
-  test('home page renders and offers the upload box', async ({ page }) => {
+test.describe('the workspace', () => {
+  test('opens on an empty desktop with a drop target and nothing else', async ({ page }) => {
     const errors = watchConsole(page);
     await page.goto('/');
 
-    await expect(page.getByRole('heading', { level: 1 })).toContainText('Open any document');
     await expect(page.getByTestId('dropzone')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Supported formats' })).toBeVisible();
     await expect(page.getByRole('banner').getByRole('link', { name: 'DocuView home' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open a file' }).first()).toBeVisible();
+
+    // The desktop is the product: no viewer tabs, no marketing sections.
+    await expect(page.getByRole('navigation', { name: 'Main' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'From file to view in three steps' })).toHaveCount(0);
 
     // Nothing should overflow horizontally at desktop width.
     const overflow = await page.evaluate(
@@ -48,22 +51,28 @@ test.describe('landing pages', () => {
     await expect(table).toBeVisible();
     await expect(table).toContainText('STEP');
     await expect(table).toContainText('DWG');
-    // Proprietary formats must be labelled honestly, not hidden.
+    // Native CAD formats open, and are labelled for what they really give you.
+    await expect(table).toContainText('SolidWorks');
+    await expect(table).toContainText('Preview');
+    // A format that genuinely does not open still says so.
     await expect(table).toContainText('Not yet');
   });
 });
 
 test.describe('upload validation', () => {
-  test('dragging over the drop zone highlights it', async ({ page }) => {
+  test('dragging a file anywhere over the workspace invites the drop', async ({ page }) => {
     await page.goto('/');
-    const dropzone = page.getByTestId('dropzone');
-    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    const dataTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['x'], 'a.stl'));
+      return transfer;
+    });
 
-    await dropzone.dispatchEvent('dragenter', { dataTransfer });
-    await expect(dropzone).toHaveAttribute('data-dragging', 'true');
+    await page.locator('body').dispatchEvent('dragenter', { dataTransfer });
+    await expect(page.getByTestId('drop-overlay')).toBeVisible();
 
-    await dropzone.dispatchEvent('dragleave', { dataTransfer });
-    await expect(dropzone).toHaveAttribute('data-dragging', 'false');
+    await page.locator('body').dispatchEvent('dragleave', { dataTransfer });
+    await expect(page.getByTestId('drop-overlay')).toHaveCount(0);
   });
 
   test('dropping a file opens it', async ({ page }) => {
@@ -76,8 +85,8 @@ test.describe('upload validation', () => {
   test('an unsupported extension is refused before anything is uploaded', async ({ page }) => {
     await page.goto('/');
     await page.setInputFiles('[data-testid="file-input"]', fixture('garbage.bin'));
-    await expect(page.getByTestId('upload-error')).toContainText('.bin');
-    // Still on the home page: nothing was sent.
+    await expect(page.getByTestId('workspace-error')).toContainText('.bin');
+    // Still on the workspace: nothing was sent.
     expect(page.url()).not.toContain('/viewer');
   });
 

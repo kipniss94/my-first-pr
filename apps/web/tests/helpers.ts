@@ -43,12 +43,13 @@ export async function openFixture(page: Page, name: string, options: { expectErr
 }
 
 /**
- * Drop a real file onto the drop zone, the way a person would.
+ * Drop a real file onto the page, the way a person would.
  *
  * The bytes are read in Node and rebuilt into a `File` inside the page, so this
- * exercises the actual `drop` handler rather than the file input behind it.
+ * exercises the actual `drop` handler rather than the file input behind it. The
+ * workspace listens on the window, so anywhere on the page counts.
  */
-export async function dropFile(page: Page, name: string) {
+export async function dropFile(page: Page, name: string, target = 'body') {
   const bytes = await readFile(fixture(name));
   const dataTransfer = await page.evaluateHandle(
     ({ data, fileName }) => {
@@ -61,7 +62,7 @@ export async function dropFile(page: Page, name: string) {
     },
     { data: bytes.toString('base64'), fileName: name },
   );
-  await page.getByTestId('dropzone').dispatchEvent('drop', { dataTransfer });
+  await page.locator(target).first().dispatchEvent('drop', { dataTransfer });
 }
 
 /**

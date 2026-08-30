@@ -93,14 +93,14 @@ function EmptyState() {
             No document open
           </h1>
           <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-mist-400">
-            Documents live for the length of a session. Upload a file to open the viewer.
+            Documents live for the length of a session. Drop a file here, or pick one from the workspace.
           </p>
           <div className="mt-8">
             <Dropzone compact />
           </div>
           <p className="mt-6 text-center text-sm">
             <Link href="/" className="link-quiet underline underline-offset-4">
-              Back to the home page
+              Back to the workspace
             </Link>
           </p>
         </div>

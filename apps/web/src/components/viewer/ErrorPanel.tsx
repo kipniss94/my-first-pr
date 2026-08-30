@@ -37,7 +37,7 @@ export function ErrorPanel({ error, fileName, onRetry }: ErrorPanelProps) {
               Try again
             </button>
           )}
-          <Link href="/#upload" className="btn btn-primary">
+          <Link href="/" className="btn btn-primary">
             Upload another file
           </Link>
         </div>

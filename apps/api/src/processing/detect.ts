@@ -94,15 +94,33 @@ function probeZip(filePath: string): ZipProbe {
   }
 }
 
-/** Legacy OLE compound files: Word/Excel/PowerPoint before 2007. */
+/**
+ * OLE compound files. Two very different families share this container: legacy
+ * Office documents, and the native CAD formats (SolidWorks, Inventor, Revit),
+ * which is why the CAD signatures have to be probed here rather than left to
+ * the extension.
+ */
 function probeOle(head: Buffer, tail: Buffer): ZipProbe {
   // Stream names inside a CFB are stored UTF-16LE; strip the zero bytes and
   // look for the well known root stream names.
   const text = Buffer.concat([head, tail]).toString('latin1').replace(/\u0000/g, '');
   if (text.includes('WordDocument')) return { formatId: 'doc', detail: 'ole:word' };
+  if (/PowerPoint Document/.test(text)) return { formatId: 'ppt', detail: 'ole:ppt' };
+  if (/SolidWorks|SOLIDWORKS|swXmlContents|SwDocContentMgr|ISolidWorksInformation/.test(text)) {
+    return { formatId: 'sldprt', detail: 'ole:solidworks' };
+  }
+  if (/RSeDb|RSeSegInfo|Inventor|ProteinBRepData/.test(text)) return { formatId: 'inventor', detail: 'ole:inventor' };
+  if (/BasicFileInfo|Revit|RevitPreview4\.0/.test(text)) return { formatId: 'rvt', detail: 'ole:revit' };
   if (text.includes('Workbook') || text.includes('Book')) return { formatId: 'xls', detail: 'ole:excel' };
-  if (text.includes('PowerPoint Document')) return { formatId: 'ppt', detail: 'ole:ppt' };
   return { formatId: null, detail: 'ole:unknown' };
+}
+
+/**
+ * Formats with no public signature to check against: the vendor's own
+ * container, which we can only identify by its extension.
+ */
+function isClosedContainer(format: FormatDescriptor | undefined): boolean {
+  return format?.processor === 'cad-proprietary';
 }
 
 /** Binary STL has a 80 byte header followed by a uint32 triangle count. */
@@ -186,8 +204,24 @@ export async function detectFormat(
   }
   if (startsWith(head, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) {
     const probe = probeOle(head, tail);
-    if (probe.formatId) return decide(probe.formatId, 'Office 97-2003', probe.detail);
-    return decide(null, 'Office 97-2003', probe.detail);
+    if (probe.formatId) {
+      const office = probe.formatId === 'doc' || probe.formatId === 'xls' || probe.formatId === 'ppt';
+      return decide(probe.formatId, office ? 'Office 97-2003' : null, probe.detail);
+    }
+    // A compound file we cannot name from its first pages. CAD writers put
+    // their marker streams deep in the container, so a native CAD extension is
+    // trusted here — but only for those closed formats, never for one we can
+    // recognise from its content.
+    if (byExt && isClosedContainer(byExt)) return decide(byExt.id, null, 'ole:extension-native-cad');
+    return decide(null, null, probe.detail);
+  }
+  if (headAscii.startsWith('Version ') && /\bJT\b/.test(headAscii.slice(0, 80))) {
+    const version = /Version\s+([\d.]+)/.exec(headAscii)?.[1];
+    return decide('jt', version ? `JT ${version}` : null, 'magic:jt');
+  }
+  if (/^\*\*ABCDEFGHIJKLMNOPQRSTUVWXYZ\*\*/.test(headAscii) || headAscii.startsWith('**PARASOLID')) {
+    const version = /SCH_(\d+)/.exec(headAscii.slice(0, 400))?.[1];
+    return decide('parasolid', version ? `Parasolid schema ${version}` : 'Parasolid transmit', 'magic:parasolid');
   }
   if (headAscii.startsWith('glTF')) {
     const version = head.length >= 24 ? head.readUInt32LE(4) : 0;
@@ -270,10 +304,14 @@ export async function detectFormat(
     return decide('txt', null, 'heuristic:text');
   }
 
-  // Binary blob we do not recognise. Proprietary CAD formats are matched on the
-  // extension so we can show a specific message instead of a generic failure.
-  if (byExt && byExt.pipeline === 'unsupported') {
-    return decide(byExt.id, null, 'extension:proprietary-binary');
+  // Binary blob with no signature we know. Native CAD containers (CATIA, JT,
+  // binary Parasolid) are deliberately undocumented, so the extension is the
+  // only handle we have for those. It is safe to trust there: the file is
+  // parsed as data, never executed, and the processor says so honestly when it
+  // finds nothing readable inside. Formats with a public signature — STEP, STL,
+  // DXF, PDF — are never promoted this way, so a renamed blob stays unknown.
+  if (byExt && (isClosedContainer(byExt) || byExt.pipeline === 'unsupported')) {
+    return decide(byExt.id, null, 'extension:closed-container');
   }
   return decide(null, null, 'unknown:binary');
 }

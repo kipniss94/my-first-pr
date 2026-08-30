@@ -114,6 +114,14 @@ export const config = {
    */
   dwgConverterCmd: process.env.DWG_CONVERTER_CMD?.trim() || null,
 
+  /**
+   * Optional licensed converter for native CAD formats (SolidWorks, Inventor,
+   * CATIA, Parasolid). When set, those uploads are converted to STEP and gain
+   * full geometry; when unset they open from the preview stored in the file.
+   * `{input}`, `{output}`, `{outdir}`, `{informat}` are replaced.
+   */
+  cadConverterCmd: process.env.CAD_CONVERTER_CMD?.trim() || null,
+
   prettyLogs: bool(process.env.PRETTY_LOGS, process.env.NODE_ENV !== 'production'),
   logLevel: process.env.LOG_LEVEL ?? 'info',
 } as const;

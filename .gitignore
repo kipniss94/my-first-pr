@@ -5,7 +5,9 @@ out/
 *.tsbuildinfo
 
 # Uploaded documents and everything derived from them. Never commit these.
+# `data-*` covers the throwaway directories used when smoke-testing.
 data/
+data-*/
 
 # Generated test documents (`npm run fixtures` recreates them).
 fixtures/

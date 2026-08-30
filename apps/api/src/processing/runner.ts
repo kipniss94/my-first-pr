@@ -12,6 +12,7 @@ import { ProcessingError, type ProcessorContext } from './context.js';
 import type { ProcessMessage, ProcessRequest } from './types.js';
 import { processOcct } from './processors/cad-occt.js';
 import { processDwg } from './processors/cad-dwg.js';
+import { processProprietaryCad } from './processors/cad-proprietary.js';
 import { processWord } from './processors/office-word.js';
 import { processSheet } from './processors/office-sheet.js';
 import { processSlides } from './processors/office-slides.js';
@@ -25,6 +26,7 @@ type Processor = (ctx: ProcessorContext) => Promise<JobResult>;
 const PROCESSORS: Record<string, Processor> = {
   'cad-occt': processOcct,
   'cad-dwg': processDwg,
+  'cad-proprietary': processProprietaryCad,
   'office-word': processWord,
   'office-sheet': processSheet,
   'office-slides': processSlides,

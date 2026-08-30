@@ -3,6 +3,14 @@
 import { useSyncExternalStore } from 'react';
 import type { JobError, JobStage, JobState } from '@docuview/shared';
 import { ApiError, cancelJob, getJob, uploadFile, type UploadHandle } from './api';
+import {
+  getDocumentFile,
+  newDocumentId,
+  patchDocument,
+  rememberDocument,
+  touchDocument,
+  type CachedDocument,
+} from './cache';
 
 export type SessionPhase = 'uploading' | 'processing' | 'ready' | 'error' | 'cancelled';
 
@@ -21,6 +29,8 @@ export interface Session {
   job: JobState | null;
   error: JobError | null;
   startedAt: number;
+  /** Entry in the local cache, so the viewer can attach a thumbnail to it. */
+  docId: string | null;
 }
 
 /**
@@ -70,7 +80,13 @@ export function useSession(id: string | null): Session | null {
 
 /* ------------------------------- lifecycle -------------------------------- */
 
-export function startUpload(file: File): string {
+/**
+ * Begin opening a file.
+ *
+ * `docId` is supplied when the bytes came from the cache already, so reopening
+ * a document updates its card rather than creating a second one.
+ */
+export function startUpload(file: File, docId = newDocumentId()): string {
   const id = newId();
   sessions.set(id, {
     id,
@@ -85,8 +101,12 @@ export function startUpload(file: File): string {
     job: null,
     error: null,
     startedAt: Date.now(),
+    docId,
   });
   emit();
+  // Remember the file before anything can go wrong with it: an upload that
+  // fails still leaves a card the user can retry from.
+  void rememberDocument(docId, file);
 
   const handle = uploadFile(file, (loaded, total) => {
     update(id, { uploadedBytes: loaded, progress: total > 0 ? Math.round((loaded / total) * 100) : -1 });
@@ -143,6 +163,7 @@ export function attachToJob(jobId: string): string {
     job: null,
     error: null,
     startedAt: Date.now(),
+    docId: null,
   });
   emit();
   poll(id, jobId);
@@ -180,6 +201,7 @@ function poll(id: string, jobId: string): void {
 
     if (job.status === 'succeeded') {
       update(id, { ...patch, phase: 'ready', stage: 'ready', progress: 100 });
+      rememberOutcome(session.docId, job);
       return;
     }
     if (job.status === 'failed') {
@@ -188,6 +210,7 @@ function poll(id: string, jobId: string): void {
         phase: 'error',
         error: job.error ?? { code: 'processing_failed', message: "We couldn't process this file.", retryable: true },
       });
+      rememberOutcome(session.docId, job);
       return;
     }
     if (job.status === 'cancelled') {
@@ -200,6 +223,71 @@ function poll(id: string, jobId: string): void {
   };
 
   pollers.set(id, setTimeout(tick, 0));
+}
+
+/**
+ * Fold what the server worked out about a document back into its card.
+ *
+ * Called for failures too: knowing that a file is a SolidWorks assembly is
+ * worth showing on the desktop even when opening it did not work out.
+ */
+function rememberOutcome(docId: string | null, job: JobState): void {
+  if (!docId) return;
+  const patch: Partial<CachedDocument> = {
+    kind: job.format?.kind ?? 'unknown',
+    formatId: job.format?.formatId ?? null,
+    formatLabel: job.format?.label ?? null,
+    viewer: job.result?.viewer ?? null,
+    jobId: job.status === 'succeeded' ? job.id : null,
+    fileId: job.fileId,
+    openedAt: Date.now(),
+  };
+  if (job.fileName) patch.name = job.fileName;
+  if (job.size > 0) patch.size = job.size;
+  void patchDocument(docId, patch);
+}
+
+/**
+ * Reopen a document from the workspace.
+ *
+ * The fast path costs nothing at all: while the server still holds the job, the
+ * viewer attaches to it and the prepared geometry or pages are already there.
+ * Only once that has expired are the cached bytes sent again, which is silent
+ * and still beats asking someone to find the file a second time.
+ */
+export async function openCachedDocument(document: CachedDocument): Promise<string | null> {
+  if (document.jobId) {
+    try {
+      const job = await getJob(document.jobId);
+      if (job.status === 'succeeded') {
+        const id = newId();
+        sessions.set(id, {
+          id,
+          fileName: job.fileName || document.name,
+          fileSize: job.size || document.size,
+          phase: 'ready',
+          stage: 'ready',
+          progress: 100,
+          uploadedBytes: job.size || document.size,
+          jobId: job.id,
+          fileId: job.fileId,
+          job,
+          error: null,
+          startedAt: Date.now(),
+          docId: document.id,
+        });
+        emit();
+        void touchDocument(document.id);
+        return id;
+      }
+    } catch {
+      /* The job has expired; fall through to sending the bytes again. */
+    }
+  }
+
+  const file = await getDocumentFile(document);
+  if (!file) return null;
+  return startUpload(file, document.id);
 }
 
 export function cancelSession(id: string): void {

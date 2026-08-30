@@ -15,6 +15,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { StepBuilder, boxFaces, hollowBoxFaces } from './step-builder.mjs';
+import { buildCompoundFile, buildDib, buildPng, buildSummaryInformation } from './compound-file.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -461,6 +462,61 @@ async function writeMisc() {
   await write('garbage.bin', random);
 }
 
+/* ---------------------------- native CAD files ----------------------------- */
+
+/**
+ * SolidWorks-shaped documents.
+ *
+ * Real SolidWorks files cannot ship with an open repository, so these are built
+ * to the same published container layout: a compound file holding a summary
+ * property set with a thumbnail, a preview stream, and — for the assembly — the
+ * component paths a `.SLDASM` stores. They exercise exactly the code path a
+ * real part takes, which is the point.
+ */
+async function writeNativeCad() {
+  const summary = String.fromCharCode(5) + 'SummaryInformation';
+
+  await write(
+    'bracket.sldprt',
+    buildCompoundFile([
+      {
+        name: summary,
+        data: buildSummaryInformation([
+          { id: 2, value: 'Bracket 10640.00.00.04' },
+          { id: 4, value: 'DocuView fixtures' },
+          { id: 9, value: 'Rev B' },
+          { id: 18, value: 'SolidWorks 2021' },
+          { id: 17, value: buildDib(96, 72) },
+        ]),
+      },
+      { name: 'ISolidWorksInformation', data: Buffer.from('SolidWorks 2021 part document', 'utf16le') },
+      { name: 'Contents', data: Buffer.alloc(6000, 0x2c) },
+    ]),
+  );
+
+  const components = [
+    'C:\\Projects\\10640\\bracket.sldprt',
+    'C:\\Projects\\10640\\pin_8x40.SLDPRT',
+    'C:\\Library\\fasteners\\washer-m8.sldprt',
+  ].join(String.fromCharCode(0));
+
+  await write(
+    'frame.sldasm',
+    buildCompoundFile([
+      {
+        name: summary,
+        data: buildSummaryInformation([
+          { id: 2, value: 'Frame assembly' },
+          { id: 18, value: 'SolidWorks 2021' },
+        ]),
+      },
+      { name: 'ISolidWorksInformation', data: Buffer.from('SolidWorks 2021 assembly document', 'utf16le') },
+      { name: 'PreviewPNG', data: buildPng(240, 180) },
+      { name: 'Contents', data: Buffer.from(components, 'utf16le') },
+    ]),
+  );
+}
+
 /* ---------------------------------- main ---------------------------------- */
 
 async function write(name, contents) {
@@ -477,6 +533,7 @@ async function main() {
   await writeObj();
   await writeDxf();
   await writePdf();
+  await writeNativeCad();
   await writeMisc();
   await writeOfficeFixtures();
   await fs.rm(path.join(outDir, '.work'), { recursive: true, force: true });

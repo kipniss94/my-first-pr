@@ -2,10 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import { apiUrl } from '@/lib/api';
+import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 
 /** Images need no processing pipeline; they just need to be framed properly. */
-export function ImageViewer({ source, onReady }: { source: string; onReady(): void }) {
+export function ImageViewer({
+  source,
+  onReady,
+  onThumbnail,
+}: {
+  source: string;
+  onReady(): void;
+  /** Receives a PNG data URL for the workspace card. */
+  onThumbnail?(dataUrl: string): void;
+}) {
   const [zoom, setZoom] = useState(1);
   const [fit, setFit] = useState(true);
   const [failed, setFailed] = useState(false);
@@ -13,6 +23,34 @@ export function ImageViewer({ source, onReady }: { source: string; onReady(): vo
   useEffect(() => {
     onReady();
   }, [onReady]);
+
+  // The card thumbnail is the picture itself, scaled down on a canvas so a
+  // 40 MP photo does not become a 40 MP cache entry.
+  useEffect(() => {
+    if (!onThumbnail) return;
+    let cancelled = false;
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.onload = () => {
+      if (cancelled) return;
+      try {
+        const scale = Math.min(1, THUMBNAIL_EDGE / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        onThumbnail(canvas.toDataURL('image/png'));
+      } catch {
+        /* A tainted canvas or an SVG with no intrinsic size: skip the card art. */
+      }
+    };
+    image.src = apiUrl(source);
+    return () => {
+      cancelled = true;
+    };
+  }, [onThumbnail, source]);
 
   return (
     <div className="flex min-h-0 flex-1">

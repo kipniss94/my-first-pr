@@ -35,14 +35,14 @@ const CLIENT_VIEWERS: Record<string, ViewerId> = {
   image: 'image',
 };
 
-const PROPRIETARY_HINTS: Record<string, string> = {
-  sldprt: 'In SolidWorks use File → Save As → STEP (.step) or 3MF, then upload that file.',
-  inventor: 'In Inventor use File → Export → CAD Format → STEP, then upload that file.',
-  catia: 'In CATIA use File → Save As → STEP, then upload that file.',
-  parasolid: 'Export to STEP from the originating CAD system.',
-  jt: 'Export to STEP from the originating CAD system.',
-  ifc: 'IFC/BIM support is planned for the next stage.',
-  rvt: 'In Revit use File → Export → IFC, then upload that file (IFC support is planned).',
+/**
+ * Formats we recognise but genuinely cannot open yet. Native CAD is no longer
+ * on this list: those files go to `cad-proprietary`, which opens them from the
+ * preview and properties they carry, or converts them when the server has a
+ * licensed converter configured.
+ */
+const UNSUPPORTED_HINTS: Record<string, string> = {
+  ifc: 'IFC/BIM support is scheduled for the next stage.',
 };
 
 /**
@@ -86,7 +86,7 @@ export async function runPipeline(job: JobRecord, report: ProgressReporter): Pro
     throw new UserFacingError(
       'unsupported_format',
       `${format.label} files can't be opened in the browser yet.`,
-      PROPRIETARY_HINTS[format.id] ?? 'Try exporting the model to STEP, STL or 3MF.',
+      UNSUPPORTED_HINTS[format.id] ?? 'Try exporting the model to STEP, STL or 3MF.',
     );
   }
 
@@ -127,6 +127,7 @@ export async function runPipeline(job: JobRecord, report: ProgressReporter): Pro
     options: {
       libreOfficeBin: config.libreOfficeBin,
       dwgConverterCmd: config.dwgConverterCmd,
+      cadConverterCmd: config.cadConverterCmd,
       timeoutMs: config.processingTimeoutMs,
     },
   };
@@ -135,7 +136,27 @@ export async function runPipeline(job: JobRecord, report: ProgressReporter): Pro
     job.abort = abort;
   });
   result.warnings = [...warnings, ...result.warnings];
+  attachAssembly(job, result);
   return result;
+}
+
+/**
+ * Record the components an assembly is waiting for.
+ *
+ * The viewer reads this straight off the job, asks for the missing files, and
+ * draws each component as its own job finishes — so a big assembly appears
+ * piece by piece instead of all at once at the end.
+ */
+function attachAssembly(job: JobRecord, result: JobResult): void {
+  const names = result.meta.componentNames;
+  if (result.meta.role !== 'assembly' || !Array.isArray(names) || names.length === 0) return;
+  job.assembly = {
+    role: 'assembly',
+    components: names
+      .filter((name): name is string => typeof name === 'string')
+      .map((name) => ({ name, status: 'missing' as const, jobId: null, fileId: null })),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 /** Build a `ProcessRequest` for an on-demand rendition of an already stored file. */
@@ -159,6 +180,7 @@ export function buildRenditionRequest(
     options: {
       libreOfficeBin: config.libreOfficeBin,
       dwgConverterCmd: config.dwgConverterCmd,
+      cadConverterCmd: config.cadConverterCmd,
       timeoutMs: config.processingTimeoutMs,
     },
   };

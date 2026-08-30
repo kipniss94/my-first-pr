@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { computeSurfaceArea, computeVolume } from '@/lib/cad/geometry';
-import { loadMeshFile, loadNmg } from '@/lib/cad/loaders';
-import { CadScene, type SelectionInfo } from '@/lib/cad/scene';
+import { loadMeshFile, loadNmg, mergeModels, type MergeSource } from '@/lib/cad/loaders';
+import { CadScene, disposeObject, type SelectionInfo } from '@/lib/cad/scene';
+import type { RenderableComponent } from '@/lib/assembly';
+import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
 import type {
   CadModel,
   DisplayMode,
@@ -22,13 +24,24 @@ import { PropertiesPanel } from './PropertiesPanel';
 import { ViewerToolbar } from './ViewerToolbar';
 
 interface CadViewerProps {
-  source: string;
+  /** Primary geometry. Null for an assembly that only has components so far. */
+  source: string | null;
   meta: Record<string, unknown>;
   mode: 'nmg' | 'mesh';
   /** Shown as the root of the model tree for formats with no internal name. */
   fileName: string;
+  /**
+   * Assembly components to merge into the same scene. The list grows as parts
+   * are supplied, and each new entry is loaded and added without refetching the
+   * ones already on screen.
+   */
+  components?: RenderableComponent[];
+  /** Sentence shown under the tree when component placement is approximate. */
+  layoutNote?: string;
   onProgress(percent: number): void;
   onReady(): void;
+  /** Receives a PNG data URL of the framed model, for the workspace card. */
+  onThumbnail?(dataUrl: string): void;
 }
 
 /** Above this, computing volume and area is opt-in rather than automatic. */
@@ -43,7 +56,17 @@ const DEFAULT_SECTION: SectionState = {
   hatch: true,
 };
 
-export function CadViewer({ source, meta, mode, fileName, onProgress, onReady }: CadViewerProps) {
+export function CadViewer({
+  source,
+  meta,
+  mode,
+  fileName,
+  components,
+  layoutNote,
+  onProgress,
+  onReady,
+  onThumbnail,
+}: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CadScene | null>(null);
 
@@ -102,6 +125,29 @@ export function CadViewer({ source, meta, mode, fileName, onProgress, onReady }:
 
   /* -------------------------------- loading ------------------------------- */
 
+  /*
+   * Loaded pieces are kept here so an assembly can grow without refetching what
+   * is already on screen. The scene is told not to dispose them on each swap;
+   * this component owns them and clears them when the document closes.
+   */
+  const loadedRef = useRef(new Map<string, CadModel>());
+  const componentKey = (components ?? []).map((component) => component.id).join('|');
+
+  useEffect(() => {
+    const cache = loadedRef.current;
+    return () => {
+      for (const model of cache.values()) disposeObject(model.root);
+      cache.clear();
+    };
+  }, []);
+
+  // A different document invalidates everything held for the previous one.
+  useEffect(() => {
+    const cache = loadedRef.current;
+    for (const model of cache.values()) disposeObject(model.root);
+    cache.clear();
+  }, [fileName, mode, source]);
+
   useEffect(() => {
     const controller = new AbortController();
     let cancelled = false;
@@ -113,44 +159,108 @@ export function CadViewer({ source, meta, mode, fileName, onProgress, onReady }:
     };
 
     const formatId = typeof meta.formatId === 'string' ? meta.formatId : 'stl';
+    const wanted: { key: string; name: string; load: () => Promise<CadModel> }[] = [];
 
-    const task =
-      mode === 'nmg'
-        ? loadNmg(source, report, controller.signal)
-        : loadMeshFile(source, formatId, fileName, report, controller.signal);
+    if (source) {
+      wanted.push({
+        key: `primary:${source}`,
+        name: fileName,
+        load: () =>
+          mode === 'nmg'
+            ? loadNmg(source, report, controller.signal)
+            : loadMeshFile(source, formatId, fileName, report, controller.signal),
+      });
+    }
+    for (const component of components ?? []) {
+      wanted.push({
+        key: `component:${component.id}`,
+        name: component.name,
+        load: () =>
+          component.mode === 'nmg'
+            ? loadNmg(component.source, undefined, controller.signal)
+            : loadMeshFile(component.source, component.formatId, component.name, undefined, controller.signal),
+      });
+    }
 
-    task.then(
-      (loaded) => {
-        if (cancelled) return;
-        if (loaded.parts.length === 0) {
-          setLoadError({
-            message: 'This model opened but contains no visible geometry.',
-            hint: 'The file may only hold curves, annotations or metadata.',
-          });
-          return;
+    if (wanted.length === 0) {
+      setModel(null);
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+
+    const run = async (): Promise<void> => {
+      const cache = loadedRef.current;
+      const sources: MergeSource[] = [];
+      let loadedAny = false;
+
+      for (const entry of wanted) {
+        let model = cache.get(entry.key);
+        if (!model) {
+          model = await entry.load();
+          if (cancelled) return;
+          cache.set(entry.key, model);
+          loadedAny = true;
         }
-        setModel(loaded);
-        sceneRef.current?.setModel(loaded);
-        setSectionCoordinate(sceneRef.current?.section.coordinate ?? 0);
-        onReady();
-      },
-      (err: unknown) => {
-        if (cancelled || controller.signal.aborted) return;
+        sources.push({ name: entry.name, model });
+      }
+
+      // Drop anything that is no longer part of the document.
+      const keep = new Set(wanted.map((entry) => entry.key));
+      for (const [key, model] of cache) {
+        if (!keep.has(key)) {
+          disposeObject(model.root);
+          cache.delete(key);
+        }
+      }
+
+      const merged = sources.length === 1 && !components?.length ? sources[0].model : mergeModels(sources, fileName);
+      if (cancelled) return;
+
+      if (merged.parts.length === 0) {
         setLoadError({
-          message: "We couldn't open this model in the viewer.",
-          hint:
-            err instanceof Error && /WebGL|context/i.test(err.message)
-              ? 'The browser lost the 3D context. Reloading the page usually fixes it.'
-              : 'The prepared geometry may have expired. Try uploading the file again.',
+          message: 'This model opened but contains no visible geometry.',
+          hint: 'The file may only hold curves, annotations or metadata.',
         });
-      },
-    );
+        return;
+      }
+
+      setLoadError(null);
+      setModel(merged);
+      // The component models stay alive across this swap: we own them.
+      sceneRef.current?.setModel(merged, false);
+      setSectionCoordinate(sceneRef.current?.section.coordinate ?? 0);
+      if (loadedAny) report(100);
+      onReady();
+
+      // One frame for the fit to settle, another so the framebuffer holds the
+      // finished image rather than a half-drawn one.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (cancelled || !onThumbnail) return;
+          const shot = sceneRef.current?.snapshot(THUMBNAIL_EDGE);
+          if (shot) onThumbnail(shot);
+        });
+      });
+    };
+
+    run().catch((err: unknown) => {
+      if (cancelled || controller.signal.aborted) return;
+      setLoadError({
+        message: "We couldn't open this model in the viewer.",
+        hint:
+          err instanceof Error && /WebGL|context/i.test(err.message)
+            ? 'The browser lost the 3D context. Reloading the page usually fixes it.'
+            : 'The prepared geometry may have expired. Try uploading the file again.',
+      });
+    });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [fileName, meta, mode, onProgress, onReady, source]);
+  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, source]);
 
   /* ----------------------------- state → scene ---------------------------- */
 
@@ -343,14 +453,23 @@ export function CadViewer({ source, meta, mode, fileName, onProgress, onReady }:
             }`}
           >
             {leftOpen && model && (
-              <ModelTree
-                model={model}
-                selectedPartId={selection.partId}
-                hiddenParts={hiddenParts}
-                onSelect={onSelectPart}
-                onToggleVisibility={onToggleVisibility}
-                onIsolate={onIsolate}
-              />
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="min-h-0 flex-1">
+                  <ModelTree
+                    model={model}
+                    selectedPartId={selection.partId}
+                    hiddenParts={hiddenParts}
+                    onSelect={onSelectPart}
+                    onToggleVisibility={onToggleVisibility}
+                    onIsolate={onIsolate}
+                  />
+                </div>
+                {layoutNote && (
+                  <p className="shrink-0 border-t border-line px-3 py-2.5 text-[11px] leading-relaxed text-mist-500">
+                    {layoutNote}
+                  </p>
+                )}
+              </div>
             )}
             <PanelHandle side="left" open={leftOpen} onClick={() => setLeftOpen((open) => !open)} />
           </aside>

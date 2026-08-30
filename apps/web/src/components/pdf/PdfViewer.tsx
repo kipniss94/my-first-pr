@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { apiUrl } from '@/lib/api';
 import { formatCount } from '@/lib/format';
+import { captureWhenDrawn } from '@/lib/thumbnail';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { PdfPage } from './PdfPage';
@@ -22,6 +23,8 @@ interface PdfViewerProps {
   onPageChange?(page: number): void;
   /** Externally requested page, used by the slide rail. */
   gotoPage?: number | null;
+  /** Receives a PNG data URL of page one, for the workspace card. */
+  onThumbnail?(dataUrl: string): void;
 }
 
 export type ZoomMode = 'fit-width' | 'fit-page' | 'custom';
@@ -44,6 +47,7 @@ export function PdfViewer({
   sidebar,
   onPageChange,
   gotoPage,
+  onThumbnail,
 }: PdfViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [document_, setDocument] = useState<PDFDocumentProxy | null>(null);
@@ -103,6 +107,7 @@ export function PdfViewer({
 
         onProgress(100);
         onReady();
+
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
@@ -127,6 +132,17 @@ export function PdfViewer({
       void loaded?.destroy();
     };
   }, [onProgress, onReady, source]);
+
+  /*
+   * The workspace card is a copy of page one as the reader sees it. Taking it
+   * from the canvas the viewer already drew — instead of asking pdf.js to
+   * render the page a second time — keeps this well clear of the renderer that
+   * owns that page, which is not safe to run twice at once.
+   */
+  useEffect(() => {
+    if (!document_ || !onThumbnail) return;
+    return captureWhenDrawn('[data-page="1"] canvas', onThumbnail);
+  }, [document_, onThumbnail]);
 
   /* ------------------------------- sizing --------------------------------- */
 

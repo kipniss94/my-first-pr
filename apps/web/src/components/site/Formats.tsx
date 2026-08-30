@@ -16,6 +16,11 @@ const SUPPORT_COPY: Record<SupportLevel, { label: string; className: string; hin
     className: 'border-warn/40 bg-warn/10 text-warn',
     hint: 'Opens only when the matching converter is installed on the server.',
   },
+  preview: {
+    label: 'Preview',
+    className: 'border-accent/40 bg-accent/10 text-accent-bright',
+    hint: 'Opens from the preview and properties stored inside the file. Measurable geometry needs a server-side converter.',
+  },
   planned: {
     label: 'Not yet',
     className: 'border-line-strong bg-ink-800 text-mist-400',
@@ -74,7 +79,7 @@ interface FormatTableProps {
  */
 export function FormatTable({ kinds, id }: FormatTableProps) {
   const rows = FORMATS.filter((format) => !kinds || kinds.includes(format.kind));
-  const rank: Record<SupportLevel, number> = { full: 0, partial: 1, conversion: 2, planned: 3 };
+  const rank: Record<SupportLevel, number> = { full: 0, partial: 1, preview: 2, conversion: 3, planned: 4 };
   rows.sort((a, b) => rank[a.support] - rank[b.support] || a.label.localeCompare(b.label));
 
   return (

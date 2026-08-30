@@ -8,6 +8,7 @@ import type { JobState } from '@docuview/shared';
 import { apiUrl, deleteFile } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import { cancelSession, forgetSession, markViewerStage, type Session } from '@/lib/session';
+import { removeDocument, setThumbnail } from '@/lib/cache';
 import { Logo } from '@/components/site/SiteChrome';
 import { ErrorPanel, WarningList } from './ErrorPanel';
 import { StageRail } from './StageRail';
@@ -20,6 +21,10 @@ const loading = () => <ViewerSkeleton />;
 
 const CadViewer = dynamic(() => import('@/components/cad/CadViewer').then((m) => m.CadViewer), { ssr: false, loading });
 const DxfViewer = dynamic(() => import('@/components/cad/DxfViewer').then((m) => m.DxfViewer), { ssr: false, loading });
+const NativeCadViewer = dynamic(() => import('@/components/cad/NativeCadViewer').then((m) => m.NativeCadViewer), {
+  ssr: false,
+  loading,
+});
 const PdfViewer = dynamic(() => import('@/components/pdf/PdfViewer').then((m) => m.PdfViewer), { ssr: false, loading });
 const WordViewer = dynamic(() => import('@/components/office/WordViewer').then((m) => m.WordViewer), { ssr: false, loading });
 const SheetViewer = dynamic(() => import('@/components/office/SheetViewer').then((m) => m.SheetViewer), { ssr: false, loading });
@@ -47,7 +52,7 @@ export function ViewerShell({ session }: { session: Session }) {
 
   const onCancel = useCallback(() => {
     cancelSession(session.id);
-    router.push('/#upload');
+    router.push('/');
   }, [router, session.id]);
 
   const onDelete = useCallback(async () => {
@@ -59,10 +64,23 @@ export function ViewerShell({ session }: { session: Session }) {
       /* the sweeper will remove it regardless */
     }
     forgetSession(session.id);
-    router.push('/#upload');
-  }, [router, session.fileId, session.id]);
+    if (session.docId) await removeDocument(session.docId);
+    router.push('/');
+  }, [router, session.docId, session.fileId, session.id]);
 
   const onViewerReady = useCallback(() => markViewerStage(session.id, 'ready', 100), [session.id]);
+
+  /*
+   * The picture on the workspace card comes from whichever viewer opened the
+   * document — the 3D framebuffer, the first PDF page, the image itself — so a
+   * card shows the real document rather than a file-type icon.
+   */
+  const onThumbnail = useCallback(
+    (source: string) => {
+      if (session.docId) void setThumbnail(session.docId, source);
+    },
+    [session.docId],
+  );
   const onViewerLoading = useCallback(
     (percent: number) => markViewerStage(session.id, 'loading-viewer', percent),
     [session.id],
@@ -82,14 +100,14 @@ export function ViewerShell({ session }: { session: Session }) {
       )}
 
       {session.phase === 'error' && session.error && (
-        <ErrorPanel error={session.error} fileName={session.fileName} onRetry={() => router.push('/#upload')} />
+        <ErrorPanel error={session.error} fileName={session.fileName} onRetry={() => router.push('/')} />
       )}
 
       {session.phase === 'cancelled' && (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-4 text-center">
           <p className="text-[15px] text-mist-300">This document was cancelled.</p>
-          <Link href="/#upload" className="btn btn-primary">
-            Upload another file
+          <Link href="/" className="btn btn-primary">
+            Back to the workspace
           </Link>
         </div>
       )}
@@ -108,6 +126,7 @@ export function ViewerShell({ session }: { session: Session }) {
               fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
+              onThumbnail={onThumbnail}
             />
           )}
           {result.viewer === 'cad-mesh' && (
@@ -118,13 +137,31 @@ export function ViewerShell({ session }: { session: Session }) {
               fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
+              onThumbnail={onThumbnail}
+            />
+          )}
+          {result.viewer === 'cad-preview' && (
+            <NativeCadViewer
+              source={result.source}
+              fileName={session.fileName}
+              jobId={session.jobId}
+              assembly={job?.assembly ?? null}
+              onProgress={onViewerLoading}
+              onReady={onViewerReady}
+              onThumbnail={onThumbnail}
             />
           )}
           {result.viewer === 'cad-dxf' && (
             <DxfViewer source={result.source} onProgress={onViewerLoading} onReady={onViewerReady} />
           )}
           {result.viewer === 'pdf' && (
-            <PdfViewer source={result.source} fileName={session.fileName} onProgress={onViewerLoading} onReady={onViewerReady} />
+            <PdfViewer
+              source={result.source}
+              fileName={session.fileName}
+              onProgress={onViewerLoading}
+              onReady={onViewerReady}
+              onThumbnail={onThumbnail}
+            />
           )}
           {result.viewer === 'office-word' && (
             <WordViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
@@ -135,7 +172,9 @@ export function ViewerShell({ session }: { session: Session }) {
           {result.viewer === 'office-slides' && (
             <SlidesViewer source={result.source} meta={result.meta} onProgress={onViewerLoading} onReady={onViewerReady} />
           )}
-          {result.viewer === 'image' && <ImageViewer source={result.source} onReady={onViewerReady} />}
+          {result.viewer === 'image' && (
+            <ImageViewer source={result.source} onReady={onViewerReady} onThumbnail={onThumbnail} />
+          )}
           {result.viewer === 'none' && (
             <ErrorPanel
               error={{
@@ -212,11 +251,11 @@ function ViewerHeader({
             </svg>
           </button>
         )}
-        <Link href="/#upload" className="btn btn-subtle ml-1">
+        <Link href="/" className="btn btn-subtle ml-1">
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
             <path d="M8 3.5v9M3.5 8h9" strokeLinecap="round" />
           </svg>
-          <span className="hidden sm:inline">New file</span>
+          <span className="hidden sm:inline">Workspace</span>
         </Link>
       </div>
     </header>

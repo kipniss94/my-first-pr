@@ -30,6 +30,8 @@ const EXPECTATIONS = {
   'two-part.obj': true,
   'plate.dxf': true,
   'report.pdf': true,
+  'bracket.sldprt': true,
+  'frame.sldasm': true,
   'measurements.csv': true,
   'notes.txt': true,
   'inspection-report.docx': true,
@@ -113,7 +115,7 @@ async function main() {
     console.log(`${mark}  ${name.padEnd(26)} ${String(outcome.ms ?? 0).padStart(6)} ms  ${detail}`);
 
     if (outcome.meta && Object.keys(outcome.meta).length > 0) {
-      const interesting = ['triangles', 'parts', 'sheetCount', 'slideCount', 'words', 'units', 'producer', 'mode'];
+      const interesting = ['triangles', 'parts', 'sheetCount', 'slideCount', 'words', 'units', 'producer', 'mode', 'application', 'role', 'hasPreview', 'componentCount'];
       const summary = interesting
         .filter((key) => outcome.meta[key] !== undefined && outcome.meta[key] !== null)
         .map((key) => `${key}=${JSON.stringify(outcome.meta[key])}`)
