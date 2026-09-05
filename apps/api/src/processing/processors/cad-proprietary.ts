@@ -4,6 +4,7 @@ import type { JobResult, NativeCadDocument } from '@docuview/shared';
 import { ProcessingError, type ProcessorContext } from '../context.js';
 import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
+import { findParasolidPartitions, isSolidWorksPackage } from '../sldprt/container.js';
 import { processOcct } from './cad-occt.js';
 
 /**
@@ -22,9 +23,6 @@ import { processOcct } from './cad-occt.js';
  * The second route is a real view of the document, and the UI says plainly that
  * it is a preview rather than measurable geometry.
  */
-
-/** Formats whose bytes carry nothing we can show without a converter. */
-const NO_PREVIEW_FORMATS = new Set(['parasolid']);
 
 export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobResult> {
   const { request } = ctx;
@@ -63,9 +61,35 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     }
   }
 
-  /* -------------------------- 2. native preview -------------------------- */
-  ctx.progress('processing', 55);
+  /* --------------- 2. the geometry a modern SolidWorks carries ------------ */
+  ctx.progress('processing', 40);
   const buffer = await fs.readFile(request.filePath);
+
+  /*
+   * A current SolidWorks part is not an OLE compound file at all — it is a
+   * package of its own, and the model inside it is an ordinary Parasolid
+   * transmit stream under plain zlib. Pulling that out is worth doing even
+   * before we can draw it: it is the exact geometry, it is a format other
+   * tools accept, and having it is what lets the converter path work on a
+   * standard `.x_t` rather than on a closed SolidWorks file.
+   */
+  let parasolid: { bytes: number; version: string | null } | null = null;
+  // Not gated on recognising the package: the payload scan verifies itself, so
+  // trying it costs one pass and cannot produce a wrong answer, whereas gating
+  // on a signature meant a stricter recogniser silently discarded geometry the
+  // reader was perfectly able to extract.
+  const partitions = findParasolidPartitions(buffer);
+  const model = partitions.find((partition) => partition.data.length > 2048);
+  if (model) {
+    await fs.mkdir(request.assetsDir, { recursive: true });
+    await fs.writeFile(path.join(request.assetsDir, 'geometry.x_t'), model.data);
+    parasolid = { bytes: model.data.length, version: model.version };
+    ctx.log('info', `extracted a ${model.data.length} B Parasolid partition (modeller ${model.version})`);
+  } else if (isSolidWorksPackage(buffer)) {
+    ctx.log('warn', 'SolidWorks package recognised, but its model partition is not plain zlib');
+  }
+
+  ctx.progress('processing', 55);
   const info = inspectNativeCad(buffer, request.formatId, request.extension);
   ctx.log('info', `native inspection: ${info.detail.join(', ') || 'nothing found'}`);
 
@@ -84,16 +108,17 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     };
   }
 
-  if (!previewAsset && info.properties.length === 0 && info.references.length === 0) {
-    throw new ProcessingError(
-      'cad_no_readable_content',
-      `This ${info.application} file doesn't carry a preview we can show.`,
-      NO_PREVIEW_FORMATS.has(request.formatId)
-        ? 'This format stores geometry only. Export a STEP file, or configure a CAD converter on the server (CAD_CONVERTER_CMD).'
-        : 'It may have been saved without a preview image. Export a STEP file, or configure a CAD converter on the server (CAD_CONVERTER_CMD).',
-      false,
-      `no preview, properties or references found (${info.detail.join(', ')})`,
-    );
+  /*
+   * Nothing readable is a result, not a crash. Some SolidWorks packages keep
+   * every payload behind a codec we cannot open — the entry names decode, the
+   * sizes are there, and the bytes are indistinguishable from random. The
+   * document still opens, saying exactly that, because a dead end with a
+   * "reference: CAD_NO_READABLE_CONTENT" tells the person nothing they can act
+   * on.
+   */
+  const opaque = !previewAsset && !parasolid && info.properties.length === 0 && info.references.length === 0;
+  if (opaque) {
+    ctx.log('warn', 'no readable payload: every part of this package uses a codec we cannot open');
   }
 
   const document: NativeCadDocument = {
@@ -104,13 +129,21 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     properties: info.properties,
     components: info.references.map((name) => ({ name, status: 'missing', jobId: null, fileId: null })),
     geometry: 'preview-only',
-    note: previewAsset
-      ? `${info.application} stores its geometry in a closed format, so this is the preview the CAD system saved inside the file. Measurement and sectioning need the real solid — add a STEP export, or ask your administrator to configure a CAD converter.`
-      : `This ${info.application} document opened, but it was saved without a preview image. Its properties are shown below.`,
+    note: parasolid
+      ? `The exact geometry was found inside this file — a ${(parasolid.bytes / 1024).toFixed(1)} KB Parasolid solid, written by modeller ${parasolid.version ?? 'unknown'} — and extracted. Drawing it needs a Parasolid reader, which is still being built; until then the solid can be downloaded as a standard .x_t, or a configured converter will turn it into geometry you can measure.`
+      : opaque
+        ? `This ${info.application} file keeps all of its content behind a codec we cannot open yet. The package structure reads fine — the parts are named and sized — but their bytes are indistinguishable from random, so there is nothing here to show. Around a third of the files tested behave this way; the rest open. A configured CAD converter handles this one.`
+        : previewAsset
+          ? `${info.application} stores its geometry in a closed format, so this is the preview the CAD system saved inside the file. Measurement and sectioning need the real solid — add a STEP export, or ask your administrator to configure a CAD converter.`
+          : `This ${info.application} document opened, but it was saved without a preview image. Its properties are shown below.`,
   };
 
   await fs.writeFile(path.join(request.assetsDir, 'native.json'), JSON.stringify(document));
   ctx.progress('preparing-geometry', 95);
+
+  if (opaque) {
+    warnings.push('Nothing in this file could be opened: every part of it uses a codec we cannot read yet.');
+  }
 
   if (info.role === 'assembly' && info.references.length > 0) {
     warnings.push(
@@ -127,6 +160,9 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
       application: info.application,
       role: info.role,
       hasPreview: Boolean(previewAsset),
+      parasolidBytes: parasolid?.bytes ?? 0,
+      parasolidVersion: parasolid?.version ?? null,
+      parasolidUrl: parasolid ? `/api/v1/files/${request.fileId}/assets/geometry.x_t` : null,
       componentCount: info.references.length,
       // The pipeline turns these into the job's assembly state, which is what
       // the viewer polls while components are being supplied.

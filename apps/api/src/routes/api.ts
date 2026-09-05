@@ -39,6 +39,8 @@ const ASSET_CONTENT_TYPES: Record<string, string> = {
   '.bmp': 'image/bmp',
   '.webp': 'image/webp',
   '.dxf': 'application/dxf',
+  // Parasolid solids extracted from a SolidWorks package.
+  '.x_t': 'application/octet-stream',
   // Generated document markup is served as plain text on purpose: the browser
   // must never execute it by navigating straight to the asset URL.
   '.html': 'text/plain; charset=utf-8',

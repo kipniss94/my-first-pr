@@ -24,8 +24,19 @@
 
 import zlib from 'node:zlib';
 
-/** Marks the start of an entry record. Present in every file examined. */
-const ENTRY_MARKER = Buffer.from([0x14, 0x00, 0x06, 0x00, 0x08, 0x00, 0x09, 0xb7, 0xad, 0x1a]);
+/**
+ * Marks the start of an entry record.
+ *
+ * Only the first six bytes are constant. The four that follow vary with the
+ * writing version — `09 b7 ad 1a` on one generation, `19 b7 7d 1a` on another —
+ * so matching all ten silently skipped every newer file, and the reader then
+ * reported them as "not a SolidWorks package" while quietly holding their
+ * geometry.
+ */
+const ENTRY_MARKER = Buffer.from([0x14, 0x00, 0x06, 0x00, 0x08, 0x00]);
+
+/** Bytes between the marker's start and the name-length field. */
+const NAME_LENGTH_OFFSET = 22;
 
 /** Ceilings, so a malformed or hostile file cannot spin the worker. */
 const MAX_ENTRIES = 4096;
@@ -63,7 +74,9 @@ export function unswapNibbles(bytes: Buffer): Buffer {
  * signature: the first bytes vary from file to file.
  */
 export function isSolidWorksPackage(buffer: Buffer): boolean {
-  return buffer.length > 64 && buffer.subarray(0, 4096).includes(ENTRY_MARKER);
+  // The first entry can sit well past the first few kilobytes in a large part,
+  // so this looks further in than a fixed-signature check would need to.
+  return buffer.length > 64 && buffer.subarray(0, 1 << 16).includes(ENTRY_MARKER);
 }
 
 /**
@@ -78,12 +91,13 @@ export function listEntries(buffer: Buffer): SldprtEntry[] {
   let at = buffer.indexOf(ENTRY_MARKER);
 
   while (at >= 0 && entries.length < MAX_ENTRIES) {
-    const header = at + ENTRY_MARKER.length;
-    if (header + 16 > buffer.length) break;
+    const nameLengthAt = at + NAME_LENGTH_OFFSET;
+    if (nameLengthAt + 4 > buffer.length) break;
 
-    const nameLength = buffer.readUInt32LE(header + 12);
-    if (nameLength > 0 && nameLength <= MAX_NAME_BYTES && header + 16 + nameLength <= buffer.length) {
-      const raw = buffer.subarray(header + 16, header + 16 + nameLength);
+    const nameLength = buffer.readUInt32LE(nameLengthAt);
+    const nameAt = nameLengthAt + 4;
+    if (nameLength > 0 && nameLength <= MAX_NAME_BYTES && nameAt + nameLength <= buffer.length) {
+      const raw = buffer.subarray(nameAt, nameAt + nameLength);
       entries.push({ name: unswapNibbles(raw).toString('latin1'), offset: at });
     }
     at = buffer.indexOf(ENTRY_MARKER, at + 1);
