@@ -42,6 +42,14 @@ public class Script
 	private const string AttrReminderName = "Напоминание о задаче органайзера";
 	private const string AttrRemindBeforeName = "Напомнить за (интервал)";
 
+	// Глобальный идентификатор типа связи «Связь задачи органайзера с ресурсами».
+	// Если он известен в вашей базе — впишите его сюда: тип связи будет найден
+	// сразу, без перебора наименований (см. ResolveRelationTypeID).
+	private const string TaskResourceRelationGuid = "";
+
+	// Верхняя граница перебора идентификаторов типов связей
+	private const int MaxRelationTypeID = 10000;
+
 	// --- параметры формируемой задачи ---
 	private const int TaskStartHour = 9;         // задача ставится на 09:00 даты контакта
 	private const int TaskDurationMinutes = 10;  // срок выполнения = начало + 10 минут
@@ -129,7 +137,7 @@ public class Script
 				{
 					task.CommitCreation(true);
 				}
-				catch (ObjectAlreadyExists)
+				catch (Intermech.ObjectAlreadyExists)
 				{
 					Show("Задача органайзера с таким наименованием уже существует.", MessageBoxIcon.Warning);
 					return parameters;
@@ -147,7 +155,20 @@ public class Script
 			}
 			else
 			{
-				int relationTypeID = MetaDataHelper.GetRelationTypeIDFromName(TaskResourceRelationName);
+				List<string> similarRelations = new List<string>();
+				int relationTypeID = ResolveRelationTypeID(TaskResourceRelationName, similarRelations);
+
+				if (relationTypeID <= 0)
+				{
+					string message = "не найден тип связи «" + TaskResourceRelationName + "»";
+					if (similarRelations.Count > 0)
+						message += " (похожие типы связей: " + string.Join("; ", similarRelations.ToArray()) + ")";
+
+					warnings.Add(message);
+					ShowWarnings(warnings);
+					return parameters;
+				}
+
 				IDBRelationCollection relations = session.GetRelationCollection(relationTypeID);
 
 				// Аргументы Create: 1 — ид. версии задачи, 2 — ид. версии пользователя
@@ -169,14 +190,7 @@ public class Script
 				}
 			}
 
-			if (warnings.Count > 0)
-			{
-				StringBuilder text = new StringBuilder("Задача органайзера создана, но заполнены не все данные:");
-				foreach (string warning in warnings)
-					text.Append(Environment.NewLine + "- " + warning);
-
-				Show(text.ToString(), MessageBoxIcon.Warning);
-			}
+			ShowWarnings(warnings);
 		}
 		catch (Exception ex)
 		{
@@ -184,6 +198,62 @@ public class Script
 		}
 
 		return parameters;
+	}
+
+	// =======================================================================
+	// ТИП СВЯЗИ
+	// =======================================================================
+
+	// Идентификатор типа связи по её наименованию.
+	// Поиска типа связи по имени в MetaDataHelper нет (в отличие от типов
+	// объектов), поэтому используется обратное преобразование
+	// GetRelationTypeName(id): идентификаторы перебираются, пока не встретится
+	// нужное наименование. Если глобальный идентификатор связи задан в
+	// константе TaskResourceRelationGuid, перебор не выполняется.
+	// В similarRelations собираются похожие наименования — они попадают
+	// в сообщение, если нужный тип связи не найден.
+	private int ResolveRelationTypeID(string relationName, List<string> similarRelations)
+	{
+		if (!string.IsNullOrEmpty(TaskResourceRelationGuid))
+		{
+			try
+			{
+				int relationTypeID = MetaDataHelper.GetRelationTypeID(TaskResourceRelationGuid);
+				if (relationTypeID > 0)
+					return relationTypeID;
+			}
+			catch
+			{
+				// неверный или неизвестный в этой базе идентификатор — ищем по наименованию
+			}
+		}
+
+		for (int relationTypeID = 1; relationTypeID <= MaxRelationTypeID; relationTypeID++)
+		{
+			string name;
+			try
+			{
+				name = MetaDataHelper.GetRelationTypeName(relationTypeID);
+			}
+			catch
+			{
+				continue; // типа связи с таким идентификатором нет
+			}
+
+			if (string.IsNullOrEmpty(name))
+				continue;
+
+			if (string.Compare(name.Trim(), relationName, StringComparison.CurrentCultureIgnoreCase) == 0)
+				return relationTypeID;
+
+			if (similarRelations != null &&
+				name.IndexOf("органайзер", StringComparison.CurrentCultureIgnoreCase) >= 0)
+			{
+				similarRelations.Add("[" + relationTypeID + "] " + name);
+			}
+		}
+
+		return -1;
 	}
 
 	// =======================================================================
@@ -363,5 +433,18 @@ public class Script
 	private void Show(string text, MessageBoxIcon icon)
 	{
 		MessageBox.Show(text, DialogCaption, MessageBoxButtons.OK, icon);
+	}
+
+	// Итоговое сообщение о том, что осталось незаполненным (если такое есть).
+	private void ShowWarnings(List<string> warnings)
+	{
+		if (warnings == null || warnings.Count == 0)
+			return;
+
+		StringBuilder text = new StringBuilder("Задача органайзера создана, но заполнены не все данные:");
+		foreach (string warning in warnings)
+			text.Append(Environment.NewLine + "- " + warning);
+
+		Show(text.ToString(), MessageBoxIcon.Warning);
 	}
 }
