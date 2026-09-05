@@ -120,6 +120,7 @@ export function NativeCadViewer({
 
       <aside className="hidden w-80 shrink-0 flex-col overflow-y-auto border-l border-line bg-ink-850 lg:flex">
         <GeometryNotice document={document} showingGeometry={showGeometry} />
+        {document.measured && <MeasuredSize measured={document.measured} />}
         {isAssembly && (
           <ComponentsPanel
             components={components}
@@ -202,6 +203,40 @@ function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocu
         {showingGeometry
           ? 'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.'
           : document.note}
+      </p>
+    </section>
+  );
+}
+
+/**
+ * The one hard number this file has yielded so far.
+ *
+ * It is read from the model's own vertices, not from anything SolidWorks
+ * wrote down about itself, so it is labelled as measured and says what it was
+ * measured from. A part with curved faces and no corners has no vertices to
+ * read and this panel simply does not appear.
+ */
+function MeasuredSize({ measured }: { measured: NonNullable<NativeCadDocument['measured']> }) {
+  const axes: [string, number][] = [
+    ['X', measured.sizeMm.x],
+    ['Y', measured.sizeMm.y],
+    ['Z', measured.sizeMm.z],
+  ];
+  return (
+    <section className="border-b border-line p-4" data-testid="native-measured">
+      <h2 className="field-label">Measured size</h2>
+      <div className="mt-3 flex items-baseline gap-3">
+        {axes.map(([axis, mm]) => (
+          <div key={axis}>
+            <span className="text-[10px] uppercase tracking-wide text-mist-500">{axis}</span>
+            <p className="text-[15px] tabular-nums text-mist-100">{mm.toFixed(1)}</p>
+          </div>
+        ))}
+        <span className="text-[12px] text-mist-500">mm</span>
+      </div>
+      <p className="mt-2 text-[11px] leading-relaxed text-mist-500">
+        Extent of the {measured.vertices} vertices read from the solid inside this file. Curved faces can
+        reach past their corners, so treat this as the vertex extent rather than a certified bounding box.
       </p>
     </section>
   );
