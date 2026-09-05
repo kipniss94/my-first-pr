@@ -12,21 +12,24 @@ beside it and continue without re-deriving anything.
 
 ## What is realistically in reach
 
-A `.SLDPRT` is an OLE compound file. Inside it there are, broadly, three kinds
-of thing:
+A `.SLDPRT` is a package of its own — **not** an OLE compound file, whatever the
+extension databases claim; see `01-container.md`. Inside it there are, broadly,
+three kinds of thing:
 
 | Content | Reachable? | Why |
 | --- | --- | --- |
-| Document properties, preview bitmap | **Yes, done** | Standard OLE property sets and ordinary images. Already implemented in `apps/api/src/processing/native-cad.ts`. |
-| **Tessellated display geometry** — the triangles SolidWorks draws on screen and eDrawings reads | **This is the target** | It is a mesh: vertices, triangles, normals, edges. Undocumented, but it is plain numeric data, and numeric data leaves fingerprints. |
-| Exact B-rep — the NURBS surfaces of the solid | **No** | That is a Parasolid kernel transmit stream. Reconstructing it means reimplementing a commercial geometry kernel. Not a goal here, and saying otherwise would be dishonest. |
+| Document properties, preview bitmap | **No, on modern files** | `native-cad.ts` reads OLE property sets, and these files have none. The preview lives in a part of the package that is not plain zlib and has not yielded yet. |
+| Tessellated display geometry (`DisplayLists`, `LWDATA`) | **Not needed** | In the same unopened part of the package. Superseded: the exact geometry turned out to be easier to reach than the display cache. |
+| Exact B-rep — the NURBS surfaces of the solid | **Yes — this was wrong** | See `01-container.md`. It is a Parasolid transmit stream, zlib-compressed and otherwise untouched, in a format Siemens publishes. It has been extracted from all 21 sample files and the coordinates verified against known dimensions. Reading it is work, but there is nothing left to reverse. |
 
-So: **a mesh is the deliverable.** That is enough to rotate, measure a bounding
-box, and cut a section. It is not enough to measure an exact radius off a
-cylindrical face — and the viewer will keep saying so.
+**Superseded by phase 1.** The target is now the exact B-rep in the Parasolid
+partition, tessellated for display. A mesh is what the viewer eventually draws,
+but it is derived from the real surfaces rather than scavenged from a display
+cache — which means measurements are against the model, not against a
+tessellation of unknown tolerance.
 
-Full exact geometry stays available through `CAD_CONVERTER_CMD`, which routes
-the file through a licensed converter and the ordinary STEP path.
+`CAD_CONVERTER_CMD` remains as the route for anything this parser cannot yet
+handle.
 
 ---
 
@@ -70,9 +73,9 @@ result.
 
 ## The instruments
 
-All three live in `scripts/sldprt/` and reuse the application's own compound
-file reader — so if that reader cannot open a real file, these say so
-immediately rather than hiding it.
+All three live in `scripts/sldprt/`. They reuse the application's own readers on
+purpose: when the compound-file reader failed on the first real part, these said
+so immediately instead of hiding it behind a second implementation.
 
 ```bash
 # What is in this file? Every stream, its entropy, compression, and whether it
@@ -104,8 +107,8 @@ coordinate array.
 
 | Phase | Output | Done when |
 | --- | --- | --- |
-| 1. Container map | `01-streams.md` | Every stream in real files catalogued, with a shortlist of geometry candidates and a stated reason for each. |
-| 2. Structure | `02-structures.md` | Vertex array located and confirmed by at least two independent anchors (a value hunt and a diff). Record layout described field by field. |
+| ~~1. Container map~~ | `01-container.md` | **Done.** Container decoded, Parasolid partition extracted from 21/21 files, coordinates confirmed by controlled pairs. |
+| 2. Parasolid structure | `02-parasolid.md` | Node table and topology parsed: body → shell → face → loop → edge → vertex, with the surface attached to each face. |
 | 3. Decoder | `apps/api/src/processing/sldprt/` + tests | Mesh extracted from a real file and passing the validation checks above. |
 | 4. Integration | processor `cad-sldprt` → NMG → `CadViewer` | A real `.SLDPRT` opens as rotatable, sectionable geometry in the app. |
 
@@ -115,12 +118,11 @@ stops there — with the finding written down, rather than more effort spent.
 
 ---
 
-## What is needed to start
+## Samples
 
-Real files. This is a hard blocker: the synthetic fixtures in `fixtures/` are
-built to the published container spec and prove the tooling runs, but they say
-nothing about how SolidWorks actually stores geometry. The one real file tried
-so far (112 KB, `10640.00.00.00.00.05.SLDPRT`) already showed that the current
-preview extractor finds nothing in it.
-
-See `samples/README.md` for what to provide and where to put it.
+21 real parts, supplied as controlled pairs, live in `samples/` (not committed —
+see `samples/README.md`). They are what turned this from guesswork into
+measurement: the synthetic fixtures in `fixtures/` are built to the published
+OLE spec and pass happily, while real SolidWorks files are not OLE containers at
+all. Every claim in `01-container.md` is checked against them by
+`apps/api/test/sldprt-container.test.ts`.
