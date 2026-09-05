@@ -94,6 +94,15 @@ describe('storage safety', () => {
     assert.equal(sanitizeDisplayName('x'.repeat(400)).length, 180);
   });
 
+  it('recovers a name that busboy read as latin-1', async () => {
+    const { sanitizeDisplayName } = await import('../src/storage/store.js');
+    // What the wire carries, and what busboy hands us for it.
+    const wire = Buffer.from('\u044e\u0431\u043a\u0430.SLDPRT', 'utf8');
+    assert.equal(sanitizeDisplayName(wire.toString('latin1')), '\u044e\u0431\u043a\u0430.SLDPRT');
+    // A name that really is latin-1 is not valid UTF-8, so it survives as it came.
+    assert.equal(sanitizeDisplayName('caf\u00e9.step'), 'caf\u00e9.step');
+  });
+
   it('refuses asset names that would escape the asset directory', async () => {
     const { assetPath } = await import('../src/storage/store.js');
     const fileId = '11111111-2222-3333-4444-555555555555';

@@ -173,14 +173,40 @@ export interface ParasolidPartition {
   version: string | null;
   /** `partition`, `deltas`, or whatever the header declares. */
   kind: string | null;
+  /** Distinct plausible coordinates in the stream — see `countCoordinates`. */
+  coordinates: number;
 }
 
 /**
- * The model's geometry.
+ * How many distinct plausible coordinates a stream holds.
  *
- * A part carries several Parasolid streams — the model partition, a much
- * smaller "ghost" partition and a deltas stream. The largest is the one with
- * the geometry in it; the others are bookkeeping.
+ * This is what separates the model from the bookkeeping, and it has to be
+ * measured rather than guessed at from the byte length. Parasolid writes its
+ * reals big-endian, so every 8-byte window is read that way and kept when it
+ * lands in a range a real dimension could occupy — a nanometre to a kilometre,
+ * plus exact zero. Reading the same bytes little-endian finds nothing at all,
+ * which is itself a check that this is the right stream.
+ *
+ * The window slides one byte at a time on purpose. Record boundaries are not
+ * known yet, so an aligned read would miss most values; the unaligned reads
+ * that land inside other fields are mostly filtered out by the range test, and
+ * being junk they cannot manufacture the structured handful of values that
+ * distinguishes a real model from a stub.
+ */
+export function countCoordinates(data: Buffer): number {
+  const seen = new Set<number>();
+  for (let i = 0; i + 8 <= data.length; i += 1) {
+    const value = data.readDoubleBE(i);
+    if (value === 0 || (Math.abs(value) > 1e-9 && Math.abs(value) < 1e3)) seen.add(value);
+  }
+  return seen.size;
+}
+
+/**
+ * Every Parasolid stream in the package, richest in coordinates first.
+ *
+ * A part carries several: the model partition, a much smaller "ghost"
+ * partition, and a deltas stream of edit history.
  */
 export function findParasolidPartitions(buffer: Buffer): ParasolidPartition[] {
   return readPayloads(buffer)
@@ -191,7 +217,38 @@ export function findParasolidPartitions(buffer: Buffer): ParasolidPartition[] {
         data: payload.data,
         version: /version\s+(\d+)/.exec(header)?.[1] ?? null,
         kind: /TRANSMIT FILE\s+\(([^)]+)\)/.exec(header)?.[1] ?? null,
+        coordinates: countCoordinates(payload.data),
       };
     })
-    .sort((a, b) => b.data.length - a.data.length);
+    .sort((a, b) => b.coordinates - a.coordinates || b.data.length - a.data.length);
+}
+
+/**
+ * The lowest coordinate count that can be a model rather than a stub.
+ *
+ * Measured, not assumed. Across 132 real parts the counts fall into two clumps
+ * with nothing between them: ghost partitions sit at 3-5 — almost always
+ * exactly 4, the numbers of a coordinate frame — while the smallest genuine
+ * model in the corpus, a turned spacer, has 7, and a plain cylinder needs
+ * radius, height, an axis and an origin to be described at all.
+ */
+const MIN_MODEL_COORDINATES = 6;
+
+/**
+ * The stream that actually holds the model, or `null` when the file only
+ * carries stubs.
+ *
+ * Selecting by byte length — the first thing this reader did — is wrong in both
+ * directions, and both errors are in the corpus. A simple turned part has a
+ * 1960-byte model partition, under any size threshold worth setting; and a
+ * 2.2 MB part can carry a 2520-byte *ghost* partition and nothing else, which a
+ * size threshold happily reports as geometry. Counting coordinates asks the
+ * question directly: is there a model in here, or only a reference to one that
+ * stayed behind the codec we cannot open?
+ */
+export function findModelPartition(buffer: Buffer): ParasolidPartition | null {
+  const best = findParasolidPartitions(buffer).find(
+    (partition) => partition.kind === 'partition' && partition.coordinates >= MIN_MODEL_COORDINATES,
+  );
+  return best ?? null;
 }

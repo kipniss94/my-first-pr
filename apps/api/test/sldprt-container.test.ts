@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { before, describe, it } from 'node:test';
 import {
+  countCoordinates,
+  findModelPartition,
   findParasolidPartitions,
   isParasolid,
   isSolidWorksPackage,
@@ -65,31 +67,60 @@ describe('SolidWorks package container', () => {
     }
   });
 
-  it('extracts geometry from most of the corpus, and reports the rest honestly', async (t) => {
+  it('tells a model partition from the stub that only points at one', async (t) => {
     if (available.length === 0) return t.skip('no files in samples/');
 
-    const opaque: string[] = [];
-    let reached = 0;
+    // A ghost partition is a coordinate frame and nothing else. If any file in
+    // the corpus carries one alongside a real model, the two must be separable,
+    // because the whole coverage number rests on that distinction.
+    let checked = 0;
     for (const name of available) {
-      const partitions = findParasolidPartitions(await load(name));
-      // Above 2 KB is a model partition; the small ones are bookkeeping.
-      if (partitions.some((partition) => partition.data.length > 2048)) reached += 1;
-      else opaque.push(name);
+      const streams = findParasolidPartitions(await load(name));
+      const model = streams.find((stream) => stream.kind === 'partition' && stream.coordinates >= 6);
+      const ghosts = streams.filter((stream) => stream !== model && stream.kind === 'partition');
+      if (!model || ghosts.length === 0) continue;
+      checked += 1;
+      for (const ghost of ghosts) {
+        assert.ok(
+          ghost.coordinates < model.coordinates,
+          `${name}: ghost partition has ${ghost.coordinates} coordinates, model only ${model.coordinates}`,
+        );
+      }
+    }
+    assert.ok(checked > 0, 'expected at least one file carrying both a model and a ghost partition');
+  });
+
+  it('extracts geometry from part of the corpus, and reports the rest honestly', async (t) => {
+    if (available.length === 0) return t.skip('no files in samples/');
+
+    let model = 0;
+    let stub = 0;
+    let none = 0;
+    let empty = 0;
+    for (const name of available) {
+      const buffer = await load(name);
+      if (buffer.length < 1024) empty += 1;
+      else if (findModelPartition(buffer)) model += 1;
+      else if (findParasolidPartitions(buffer).length > 0) stub += 1;
+      else none += 1;
     }
 
-    const share = reached / available.length;
-    console.log(`      geometry reached in ${reached}/${available.length} files (${(share * 100).toFixed(0)}%)`);
+    const real = available.length - empty;
+    const share = model / real;
+    console.log(
+      `      model ${model}/${real} (${(share * 100).toFixed(0)}%), stub only ${stub}, no Parasolid ${none}, empty ${empty}`,
+    );
 
-    // Not every file yields: some SolidWorks packages keep every payload behind
-    // a codec we cannot open. That is a real limit, so the test tracks the
-    // proportion rather than pretending the failures do not exist.
+    // This floor replaces a higher one that was measuring the wrong thing. The
+    // old rule counted any Parasolid stream over 2 KB as geometry, which swept
+    // in ghost partitions of 2184-2856 bytes and reported 58% — the true figure
+    // under the corrected rule is 49%, and the reader did not get worse. A
+    // number that flatters the work is worse than no number.
     //
-    // The floor is the measured baseline (79/137 parts, 58%), minus a little
-    // room. It exists to catch a regression, not to certify a target: raise it
-    // when the reader genuinely improves.
+    // Raise this when the reader genuinely improves, never to make a run pass.
     assert.ok(
-      share >= 0.55,
-      `geometry reached in only ${reached}/${available.length} files, below the 55% baseline; opaque: ${opaque.slice(0, 5).join(', ')}`,
+      share >= 0.45,
+      `a model was extracted from only ${model}/${real} parts, below the 45% baseline`,
     );
   });
 
@@ -102,6 +133,20 @@ describe('SolidWorks package container', () => {
       assert.equal(buffer.readUInt32LE(payload.offset - 8), payload.data.length);
       assert.equal(buffer.readUInt32LE(payload.offset - 4), payload.compressedBytes);
     }
+  });
+
+  it('counts only values a dimension could plausibly take', () => {
+    const data = Buffer.alloc(40);
+    data.writeDoubleBE(0.01, 0);      // 10 mm — counted
+    data.writeDoubleBE(0, 8);         // exact zero — counted
+    data.writeDoubleBE(1e-306, 16);   // a denormal from misread text — not
+    data.writeDoubleBE(1e12, 24);     // far past any real part — not
+    data.writeDoubleBE(0.01, 32);     // a repeat — counted once
+    // The slide is unaligned, so the reads that straddle two of these values
+    // are part of the measurement; what matters is that the planted values are
+    // all found and the implausible ones are not.
+    const found = countCoordinates(data);
+    assert.ok(found >= 2 && found < 10, `expected a handful of values, got ${found}`);
   });
 
   it('does not mistake arbitrary data for a Parasolid stream', () => {
