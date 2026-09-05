@@ -18,7 +18,8 @@ using Intermech.Interfaces.Client;
 //        «Начато»                   = дата следующего контакта, 09:00;
 //        «Срок выполнения»          = «Начато» + 10 мин;
 //        «Наименование»             = «Связаться с <наименование предприятия>»;
-//        «Текст задачи органайзера» = «Связаться с ips://object/<ид. версии>»;
+//        «Текст задачи органайзера» = «Связаться с <наименование предприятия>»
+//                                     со ссылкой ips://object/<ид. версии>;
 //   3) включает текущего пользователя IPS в состав задачи связью
 //      «Связь задачи органайзера с ресурсами» и заполняет атрибуты связи:
 //        «Напоминание о задаче органайзера»          = да;
@@ -68,6 +69,16 @@ public class Script
 
 	private const string DialogCaption = "Задача органайзера";
 	private const string ObjectLinkPrefix = "ips://object/";
+
+	// Формат ссылки на предприятие в тексте задачи органайзера:
+	//   "plain" — наименование, следом адрес ips://object/<ид>. Адрес IPS
+	//             распознаёт и делает кликабельным сам — работает всегда;
+	//   "html"  — <a href="ips://object/<ид>">Наименование</a>;
+	//   "rtf"   — гиперссылка RTF: кликабельно само наименование.
+	// Поле «Текст задачи органайзера» хранит обычный текст, поэтому поддержку
+	// разметки нужно проверить на своей базе: если в карточке задачи видна сама
+	// разметка, а не ссылка, — верните "plain".
+	private const string TaskTextLinkFormat = "plain";
 
 	public AttributeValidationScriptParameters Execute(AttributeValidationScriptParameters parameters)
 	{
@@ -137,9 +148,9 @@ public class Script
 			SetValue(task, AttrTaskDeadlineName, warnings, taskDeadline);
 			SetValue(task, AttrCaptionName, warnings, "Связаться с " + sourceName);
 
-			// «Текст задачи органайзера» — ссылка на предприятие вида
+			// «Текст задачи органайзера» — наименование предприятия со ссылкой
 			// ips://object/<идентификатор версии объекта-источника>.
-			SetValue(task, AttrTaskTextName, warnings, "Связаться с " + ObjectLinkPrefix + source.ObjectID);
+			SetValue(task, AttrTaskTextName, warnings, BuildTaskText(sourceName, source.ObjectID));
 
 			// Завершаем создание объекта
 			if (task.IsCreationMode)
@@ -206,6 +217,54 @@ public class Script
 		}
 
 		return parameters;
+	}
+
+	// =======================================================================
+	// ТЕКСТ ЗАДАЧИ
+	// =======================================================================
+
+	// Текст задачи: «Связаться с <наименование>» со ссылкой на предприятие.
+	// Вид ссылки задаётся константой TaskTextLinkFormat.
+	private string BuildTaskText(string sourceName, long sourceObjectID)
+	{
+		string address = ObjectLinkPrefix + sourceObjectID;
+		string name = string.IsNullOrEmpty(sourceName) ? address : sourceName;
+
+		if (string.Compare(TaskTextLinkFormat, "html", StringComparison.OrdinalIgnoreCase) == 0)
+			return "Связаться с <a href=\"" + address + "\">" + EscapeHtml(name) + "</a>";
+
+		if (string.Compare(TaskTextLinkFormat, "rtf", StringComparison.OrdinalIgnoreCase) == 0)
+		{
+			return "{\\rtf1\\ansi\\ansicpg1251\\deff0{\\fonttbl{\\f0\\fnil\\fcharset204 Tahoma;}}\\pard\\f0\\fs18 " +
+				EscapeRtf("Связаться с ") +
+				"{\\field{\\*\\fldinst{HYPERLINK \"" + address + "\"}}{\\fldrslt{\\ul\\cf1 " + EscapeRtf(name) + "}}}\\par}";
+		}
+
+		// Наименование и следом сам адрес: IPS делает адрес кликабельным сам.
+		return "Связаться с " + name + " " + address;
+	}
+
+	private string EscapeHtml(string text)
+	{
+		return text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+	}
+
+	// Экранирование для RTF: служебные символы и кириллица (\uNNNN?).
+	private string EscapeRtf(string text)
+	{
+		StringBuilder result = new StringBuilder(text.Length);
+
+		foreach (char symbol in text)
+		{
+			if (symbol == '\\' || symbol == '{' || symbol == '}')
+				result.Append('\\').Append(symbol);
+			else if (symbol < 128)
+				result.Append(symbol);
+			else
+				result.Append("\\u").Append((int)symbol).Append('?');
+		}
+
+		return result.ToString();
 	}
 
 	// =======================================================================
