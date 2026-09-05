@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
@@ -182,10 +183,23 @@ public class Script
 					// Тип атрибутов связи зависит от настройки базы, поэтому значение
 					// подбирается перебором: первое подошедшее записывается.
 					SetValue(taskUserRelation, AttrReminderName, warnings, true, 1, "Да");
+
+					// «Напомнить за (интервал)»: интервал может храниться как число
+					// минут/секунд, как доля суток, как время или как значение из
+					// списка. Если не подойдёт ни один вариант, в сообщении будут
+					// тип атрибута, его текущее значение и допустимые значения.
 					SetValue(taskUserRelation, AttrRemindBeforeName, warnings,
+						RemindBeforeMinutes,                                    // минуты (целое)
+						(double)RemindBeforeMinutes,                            // минуты (вещественное)
+						RemindBeforeMinutes * 60,                               // секунды
+						RemindBeforeMinutes / 1440.0,                           // доля суток
+						TimeSpan.FromMinutes(RemindBeforeMinutes),              // интервал
+						new DateTime(1899, 12, 30).AddMinutes(RemindBeforeMinutes), // время как дата
+						"00:" + RemindBeforeMinutes.ToString("00") + ":00",     // 00:15:00
+						"0:" + RemindBeforeMinutes,                             // 0:15
+						RemindBeforeMinutes.ToString(),                         // "15"
 						RemindBeforeMinutes + " мин.",
-						RemindBeforeMinutes,
-						TimeSpan.FromMinutes(RemindBeforeMinutes),
+						RemindBeforeMinutes + " минут",
 						"за " + RemindBeforeMinutes + " мин.");
 				}
 			}
@@ -292,6 +306,10 @@ public class Script
 			return;
 		}
 
+		// Причины отказа по каждому варианту — попадают в сообщение, если
+		// не подойдёт ни один из них.
+		List<string> attempts = new List<string>();
+
 		foreach (object value in values)
 		{
 			try
@@ -299,13 +317,167 @@ public class Script
 				attribute.Value = value;
 				return;
 			}
-			catch
+			catch (Exception ex)
 			{
-				// тип атрибута не принимает такое значение — пробуем следующее
+				attempts.Add(DescribeValue(value) + " → " + ex.Message);
 			}
 		}
 
-		warnings.Add("не удалось записать значение в атрибут «" + attributeName + "»");
+		StringBuilder message = new StringBuilder();
+		message.Append("не удалось записать значение в атрибут «" + attributeName + "»");
+		message.Append(Environment.NewLine + "  атрибут: " + DescribeAttribute(attribute));
+
+		foreach (string attempt in attempts)
+			message.Append(Environment.NewLine + "  " + attempt);
+
+		warnings.Add(message.ToString());
+	}
+
+	// Краткое описание значения: тип и содержимое.
+	private string DescribeValue(object value)
+	{
+		if (value == null)
+			return "null";
+
+		return value.GetType().Name + " \"" + value + "\"";
+	}
+
+	// Описание атрибута для диагностики: простые свойства обработчика (тип поля,
+	// идентификатор, текущее значение) и, если атрибут ограничен списком, —
+	// допустимые значения. Набор свойств IDBAttribute зависит от версии API,
+	// поэтому читается через reflection.
+	private string DescribeAttribute(IDBAttribute attribute)
+	{
+		StringBuilder description = new StringBuilder();
+		BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+		foreach (PropertyInfo property in attribute.GetType().GetProperties(flags))
+		{
+			if (!property.CanRead || property.GetIndexParameters().Length > 0)
+				continue;
+
+			object value;
+			try
+			{
+				value = property.GetValue(attribute, null);
+			}
+			catch
+			{
+				continue;
+			}
+
+			if (value == null)
+				continue;
+
+			// в описание попадают только простые значения (числа, строки,
+			// перечисления, даты) — коллекции и обработчики пропускаются
+			if (!(value is string) && !(value is ValueType))
+				continue;
+
+			if (description.Length > 0)
+				description.Append(", ");
+
+			description.Append(property.Name + "=" + value);
+		}
+
+		string possibleValues = GetPossibleValues(attribute);
+		if (!string.IsNullOrEmpty(possibleValues))
+			description.Append(Environment.NewLine + "  допустимые значения: " + possibleValues);
+
+		return description.ToString();
+	}
+
+	// Допустимые значения атрибута-списка: сначала у самого обработчика
+	// атрибута, затем у MetaDataHelper по идентификатору атрибута.
+	private string GetPossibleValues(IDBAttribute attribute)
+	{
+		string[] propertyNames = new string[]
+		{
+			"PossibleValues", "AllowedValues", "ListValues", "ValuesList", "EnumValues", "Values"
+		};
+
+		BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+		foreach (string propertyName in propertyNames)
+		{
+			PropertyInfo property = attribute.GetType().GetProperty(propertyName, flags);
+			if (property == null || !property.CanRead)
+				continue;
+
+			try
+			{
+				string list = FormatEnumerable(property.GetValue(attribute, null));
+				if (!string.IsNullOrEmpty(list))
+					return list;
+			}
+			catch
+			{
+				// свойство недоступно — пробуем следующее
+			}
+		}
+
+		int attributeID;
+		try
+		{
+			attributeID = attribute.AttributeID;
+		}
+		catch
+		{
+			return string.Empty;
+		}
+
+		foreach (MethodInfo method in typeof(MetaDataHelper).GetMethods(BindingFlags.Public | BindingFlags.Static))
+		{
+			ParameterInfo[] methodParameters = method.GetParameters();
+			if (methodParameters.Length != 1 || methodParameters[0].ParameterType != typeof(int))
+				continue;
+
+			if (method.Name.IndexOf("Value", StringComparison.OrdinalIgnoreCase) < 0)
+				continue;
+
+			try
+			{
+				string list = FormatEnumerable(method.Invoke(null, new object[] { attributeID }));
+				if (!string.IsNullOrEmpty(list))
+					return method.Name + ": " + list;
+			}
+			catch
+			{
+				// метод не подошёл — пробуем следующий
+			}
+		}
+
+		return string.Empty;
+	}
+
+	// Первые значения перечислимого результата одной строкой.
+	private string FormatEnumerable(object value)
+	{
+		IEnumerable items = value as IEnumerable;
+		if (items == null || value is string)
+			return string.Empty;
+
+		StringBuilder text = new StringBuilder();
+		int count = 0;
+
+		foreach (object item in items)
+		{
+			if (item == null)
+				continue;
+
+			if (text.Length > 0)
+				text.Append(" | ");
+
+			text.Append(item.ToString());
+
+			if (++count >= 20)
+			{
+				text.Append(" | ...");
+				break;
+			}
+		}
+
+		return text.ToString();
 	}
 
 	// =======================================================================
