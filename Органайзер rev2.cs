@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
@@ -62,10 +61,6 @@ public class Script
 	// cadd9cca-306c-11d8-b4e9-00304f19f545, размер 10) со списком допустимых
 	// значений, поэтому пишется ровно то значение, которое есть в списке.
 	private const string RemindBeforeText = "за 15 мин.";
-
-	// По этому фрагменту нужное значение отыскивается в самом списке
-	// допустимых значений атрибута, если ни одно из написаний не подошло.
-	private const string RemindBeforeFragment = "15";
 
 	private const string DialogCaption = "Задача органайзера";
 	private const string ObjectLinkPrefix = "ips://object/";
@@ -365,10 +360,12 @@ public class Script
 		warnings.Add(BuildAssignWarning(attribute, attributeName, attempts));
 	}
 
-	// «Напомнить за (интервал)» — строка из списка допустимых значений.
-	// Сначала пробуются известные написания, затем — значение, найденное
-	// в самом списке допустимых значений атрибута (на случай другого
-	// написания в конкретной базе).
+	// «Напомнить за (интервал)» — строковый атрибут связи со списком допустимых
+	// значений. В новую связь IPS сам подставляет значение по умолчанию
+	// («за 15 мин.»), а запись из скрипта отклоняется проверкой списка значений,
+	// поэтому неудачная попытка не считается ошибкой и в замечания не попадает.
+	// Если значение по умолчанию в базе изменят, интервал нужно будет задавать
+	// в карточке задачи вручную.
 	private void SetRemindBefore(IDBRelation relation, List<string> warnings)
 	{
 		IDBAttribute attribute = relation.Attributes.FindByName(AttrRemindBeforeName);
@@ -378,17 +375,7 @@ public class Script
 			return;
 		}
 
-		List<string> attempts = new List<string>();
-
-		object[] values = new object[] { RemindBeforeText, "15 мин.", "за 15 минут", "15 минут" };
-		if (TryAssign(attribute, values, attempts))
-			return;
-
-		object listValue = FindValueInList(attribute, RemindBeforeFragment);
-		if (listValue != null && TryAssign(attribute, new object[] { listValue }, attempts))
-			return;
-
-		warnings.Add(BuildAssignWarning(attribute, AttrRemindBeforeName, attempts));
+		TryAssign(attribute, new object[] { RemindBeforeText }, new List<string>());
 	}
 
 	// Записывает в атрибут первое из значений, которое принимает его тип.
@@ -461,90 +448,6 @@ public class Script
 			return "null";
 
 		return value.GetType().Name + " \"" + value + "\"";
-	}
-
-	// Значение из списка допустимых значений атрибута, содержащее заданный
-	// фрагмент. Способ получения списка зависит от версии API, поэтому
-	// проверяются и свойства обработчика атрибута, и методы MetaDataHelper,
-	// принимающие идентификатор атрибута.
-	private object FindValueInList(IDBAttribute attribute, string fragment)
-	{
-		BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-
-		string[] propertyNames = new string[]
-		{
-			"PossibleValues", "AllowedValues", "ListValues", "ValuesList", "EnumValues", "Values"
-		};
-
-		foreach (string propertyName in propertyNames)
-		{
-			PropertyInfo property = attribute.GetType().GetProperty(propertyName, flags);
-			if (property == null || !property.CanRead)
-				continue;
-
-			try
-			{
-				object match = FindInEnumerable(property.GetValue(attribute, null), fragment);
-				if (match != null)
-					return match;
-			}
-			catch
-			{
-				// свойство недоступно — пробуем следующее
-			}
-		}
-
-		int attributeID;
-		try
-		{
-			attributeID = attribute.AttributeID;
-		}
-		catch
-		{
-			return null;
-		}
-
-		foreach (MethodInfo method in typeof(MetaDataHelper).GetMethods(BindingFlags.Public | BindingFlags.Static))
-		{
-			ParameterInfo[] methodParameters = method.GetParameters();
-			if (methodParameters.Length != 1 || methodParameters[0].ParameterType != typeof(int))
-				continue;
-
-			if (method.Name.IndexOf("Value", StringComparison.OrdinalIgnoreCase) < 0)
-				continue;
-
-			try
-			{
-				object match = FindInEnumerable(method.Invoke(null, new object[] { attributeID }), fragment);
-				if (match != null)
-					return match;
-			}
-			catch
-			{
-				// метод не подошёл — пробуем следующий
-			}
-		}
-
-		return null;
-	}
-
-	// Первый элемент перечислимого результата, содержащий заданный фрагмент.
-	private object FindInEnumerable(object source, string fragment)
-	{
-		IEnumerable items = source as IEnumerable;
-		if (items == null || source is string)
-			return null;
-
-		foreach (object item in items)
-		{
-			if (item == null)
-				continue;
-
-			if (item.ToString().IndexOf(fragment, StringComparison.CurrentCultureIgnoreCase) >= 0)
-				return item;
-		}
-
-		return null;
 	}
 
 	// =======================================================================
