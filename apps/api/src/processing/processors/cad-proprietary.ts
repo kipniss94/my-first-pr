@@ -5,6 +5,7 @@ import { ProcessingError, type ProcessorContext } from '../context.js';
 import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
 import { findModelPartition, findParasolidPartitions, isSolidWorksPackage } from '../sldprt/container.js';
+import { boundsOf, readPoints, type ParasolidBounds } from '../sldprt/parasolid.js';
 import { processOcct } from './cad-occt.js';
 
 /**
@@ -76,6 +77,8 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
   let parasolid: { bytes: number; version: string | null; coordinates: number } | null = null;
   /** The model partition is missing, but the stub that references it is here. */
   let stubOnly = false;
+  let vertices: ReturnType<typeof readPoints> = [];
+  let bounds: ParasolidBounds | null = null;
   // Not gated on recognising the package: the payload scan verifies itself, so
   // trying it costs one pass and cannot produce a wrong answer, whereas gating
   // on a signature meant a stricter recogniser silently discarded geometry the
@@ -86,6 +89,16 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     await fs.writeFile(path.join(request.assetsDir, 'geometry.x_t'), model.data);
     parasolid = { bytes: model.data.length, version: model.version, coordinates: model.coordinates };
     ctx.log('info', `extracted a ${model.data.length} B Parasolid model with ${model.coordinates} coordinates (modeller ${model.version})`);
+
+    // The vertices are readable even though the rest of the node graph is not,
+    // and they are worth reading: a size taken from the model itself is the
+    // first thing about this file that is a measurement rather than a promise.
+    vertices = readPoints(model.data);
+    bounds = boundsOf(vertices);
+    if (bounds) {
+      const { x, y, z } = bounds.sizeMm;
+      ctx.log('info', `measured ${x.toFixed(1)} x ${y.toFixed(1)} x ${z.toFixed(1)} mm from ${vertices.length} vertices`);
+    }
   } else if (findParasolidPartitions(buffer).length > 0) {
     stubOnly = true;
     // The distinction matters to the person looking at the file. A stub-only
@@ -138,8 +151,13 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     properties: info.properties,
     components: info.references.map((name) => ({ name, status: 'missing', jobId: null, fileId: null })),
     geometry: 'preview-only',
+    measured: bounds ? { sizeMm: bounds.sizeMm, vertices: vertices.length } : null,
     note: parasolid
-      ? `The exact geometry was found inside this file — a ${(parasolid.bytes / 1024).toFixed(1)} KB Parasolid solid carrying ${parasolid.coordinates} distinct coordinates, written by modeller ${parasolid.version ?? 'unknown'} — and extracted. Drawing it needs a Parasolid reader, which is still being built; until then the solid can be downloaded as a standard .x_t, or a configured converter will turn it into geometry you can measure.`
+      ? `The exact geometry was found inside this file — a ${(parasolid.bytes / 1024).toFixed(1)} KB Parasolid solid carrying ${parasolid.coordinates} distinct coordinates, written by modeller ${parasolid.version ?? 'unknown'} — and extracted.${
+          bounds
+            ? ` Its vertices read as a part measuring ${bounds.sizeMm.x.toFixed(1)} × ${bounds.sizeMm.y.toFixed(1)} × ${bounds.sizeMm.z.toFixed(1)} mm.`
+            : ' Its vertices could not be read, which is normal for a turned or revolved part: those have no corners to read.'
+        } Drawing the solid needs the rest of the Parasolid schema, which is still being worked out; until then it can be downloaded as a standard .x_t, or a configured converter will turn it into geometry you can measure.`
       : stubOnly
       ? `This file names its solid but does not hand it over: SolidWorks wrote the reference frame in the clear and kept the model itself behind a codec we cannot open yet. That is a different thing from a file we failed to parse, and it is why nothing is offered for download here rather than an empty solid. About a third of the parts tested behave this way. A configured CAD converter reads this one.`
       : opaque
@@ -174,6 +192,8 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
       parasolidBytes: parasolid?.bytes ?? 0,
       parasolidVersion: parasolid?.version ?? null,
       parasolidCoordinates: parasolid?.coordinates ?? 0,
+      vertexCount: vertices.length,
+      sizeMm: bounds ? [bounds.sizeMm.x, bounds.sizeMm.y, bounds.sizeMm.z] : null,
       parasolidUrl: parasolid ? `/api/v1/files/${request.fileId}/assets/geometry.x_t` : null,
       componentCount: info.references.length,
       // The pipeline turns these into the job's assembly state, which is what

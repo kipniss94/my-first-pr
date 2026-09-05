@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { before, describe, it } from 'node:test';
+import { boundsOf, readPoints } from '../src/processing/sldprt/parasolid.js';
 import {
   countCoordinates,
   findModelPartition,
@@ -200,5 +201,83 @@ describe('geometry in the Parasolid partition', () => {
     if (!data) return t.skip('cylinder-d50-h100 not in samples/');
     assert.ok(containsBigEndianDouble(data, 0.025), 'diameter 50 mm should store radius 0.025');
     assert.ok(containsBigEndianDouble(data, 0.1), 'height 100 mm should store 0.1');
+  });
+});
+
+/**
+ * The point reader, checked against parts whose real size is known.
+ *
+ * These assertions are the whole basis for claiming the coordinates mean what
+ * the reader says they mean. If the node layout is ever wrong, a cube stops
+ * measuring 10 mm and this fails loudly rather than quietly reporting a
+ * plausible-looking wrong number.
+ */
+describe('geometry read out of the Parasolid stream', () => {
+  async function measure(name: string) {
+    if (!available.includes(name)) return null;
+    const model = findModelPartition(await load(name));
+    if (!model) return null;
+    const points = readPoints(model.data);
+    return { points, bounds: boundsOf(points) };
+  }
+
+  it('measures the controlled cube pair at its true size', async (t) => {
+    const small = await measure('cube-10.SLDPRT');
+    const large = await measure('cube-20.SLDPRT');
+    if (!small?.bounds || !large?.bounds) return t.skip('cube-10 / cube-20 not in samples/');
+
+    for (const axis of ['x', 'y', 'z'] as const) {
+      assert.ok(
+        Math.abs(small.bounds.sizeMm[axis] - 10) < 0.01,
+        `10 mm cube measured ${small.bounds.sizeMm[axis]} mm on ${axis}`,
+      );
+      assert.ok(
+        Math.abs(large.bounds.sizeMm[axis] - 20) < 0.01,
+        `20 mm cube measured ${large.bounds.sizeMm[axis]} mm on ${axis}`,
+      );
+    }
+  });
+
+  it('measures a part that states its own dimensions in its name', async (t) => {
+    // sheet-flat-50-100-2: a 50 x 100 sheet, 2 mm thick. Nothing about the file
+    // tells the reader that — the name does, and the bytes have to agree.
+    const sheet = await measure('sheet-flat-50-100-2.SLDPRT');
+    if (!sheet?.bounds) return t.skip('sheet-flat-50-100-2 not in samples/');
+
+    const sorted = [sheet.bounds.sizeMm.x, sheet.bounds.sizeMm.y, sheet.bounds.sizeMm.z].sort((a, b) => a - b);
+    assert.ok(Math.abs(sorted[0] - 2) < 0.01, `thickness measured ${sorted[0]} mm, expected 2`);
+    assert.ok(Math.abs(sorted[1] - 50) < 0.01, `width measured ${sorted[1]} mm, expected 50`);
+    assert.ok(Math.abs(sorted[2] - 100) < 0.01, `length measured ${sorted[2]} mm, expected 100`);
+  });
+
+  it('refuses to call a handful of stray points a bounding box', () => {
+    assert.equal(boundsOf([]), null);
+    assert.equal(boundsOf([{ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 1 }, { x: 2, y: 2, z: 2 }]), null);
+  });
+
+  it('never reports a size outside what a machined part could be', async (t) => {
+    if (available.length === 0) return t.skip('no files in samples/');
+
+    let measured = 0;
+    let vertexless = 0;
+    for (const name of available) {
+      const model = findModelPartition(await load(name));
+      if (!model) continue;
+      const bounds = boundsOf(readPoints(model.data));
+      if (!bounds) { vertexless += 1; continue; }
+      measured += 1;
+
+      // A wrong node offset produces reals that are absurd rather than merely
+      // inaccurate, so a sanity range catches a broken layout even where no
+      // known dimension exists to compare against.
+      const largest = Math.max(bounds.sizeMm.x, bounds.sizeMm.y, bounds.sizeMm.z);
+      assert.ok(
+        largest > 0.05 && largest < 5000,
+        `${name} measured ${largest.toFixed(1)} mm across, which is not a part`,
+      );
+    }
+
+    console.log(`      measured ${measured} models, ${vertexless} had no readable vertices`);
+    assert.ok(measured > 0, 'expected at least one model to yield a bounding box');
   });
 });

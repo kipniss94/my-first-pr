@@ -366,6 +366,20 @@ export interface NativeCadDocument {
   properties: { name: string; value: string }[];
   components: AssemblyComponent[];
   geometry: 'preview-only';
+  /**
+   * What the solid inside the file measures, when enough of it could be read.
+   *
+   * This is measured from the model's own vertices rather than reported by
+   * SolidWorks, so it is present only for parts that have vertices at all — a
+   * plain revolved cylinder has none — and it is the extent of those vertices,
+   * which for a part with curved faces can sit inside the true silhouette.
+   */
+  measured: {
+    /** Extent along each model axis, in millimetres. */
+    sizeMm: { x: number; y: number; z: number };
+    /** How many distinct vertices the box was computed from. */
+    vertices: number;
+  } | null;
   /** One paragraph, shown verbatim in the viewer. */
   note: string;
 }
