@@ -49,9 +49,32 @@ export function assetPath(fileId: string, name: string): string {
   return resolved;
 }
 
+/**
+ * Undo the latin-1 reading of a multipart file name.
+ *
+ * Browsers put the file name into the `Content-Disposition` header as raw
+ * UTF-8 bytes, but RFC 7578 leaves the encoding unstated and busboy therefore
+ * decodes each byte as latin-1, so a Cyrillic name arrives as twice as many
+ * Western-European letters — every non-ASCII name mangled, which for a
+ * Cyrillic or CJK part library is every file in it.
+ *
+ * Re-encoding to bytes and decoding as UTF-8 reverses that exactly. The strict
+ * decoder is what makes it safe to do unconditionally: a name that was never
+ * mis-decoded UTF-8 fails to parse and is returned untouched, and pure ASCII
+ * round-trips to itself.
+ */
+function decodeUploadName(name: string): string {
+  if (!/[\u0080-\u00ff]/.test(name)) return name;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(name, 'latin1'));
+  } catch {
+    return name;
+  }
+}
+
 /** Strip directory components and control characters from a user file name. */
 export function sanitizeDisplayName(name: string): string {
-  const base = name.split(/[\\/]/).pop() ?? 'document';
+  const base = decodeUploadName(name).split(/[\\/]/).pop() ?? 'document';
   const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, '').trim();
   return (cleaned || 'document').slice(0, 180);
 }

@@ -143,6 +143,44 @@ A cube stores exactly `−0.005, 0, 0.005, 0.01`. **This is the exact B-rep, not
 mesh** — a tessellated cylinder would carry hundreds of distinct vertex
 coordinates, not seventeen.
 
+## 3a. Correction: how much of the corpus actually yields geometry
+
+The first coverage figure published here — 58 % of parts — was measured with the
+wrong rule and **was too high**. It counted any Parasolid stream over 2 KB as
+geometry. That rule is wrong in both directions, and both errors are in the
+corpus:
+
+* `BT100.00.00.002.SLDPRT` has a **1960-byte model partition** — a real turned
+  part, rejected for being small.
+* `регуль.SLDPRT`, 2.2 MB, carries a **2520-byte ghost partition and nothing
+  else** — accepted as geometry, and it holds none.
+
+A ghost partition is a coordinate frame: four distinct reals, whatever its byte
+length. A model partition has as many reals as the model has geometry. Counting
+them separates the two cleanly, with nothing in between:
+
+| distinct plausible reals | parts | what it is |
+| --- | --- | --- |
+| 0 | 21 | no readable Parasolid stream at all |
+| 1–5 (almost all exactly 4) | 46 | ghost partition only — the model stayed behind the codec |
+| 7–334 | 65 | the model |
+
+So `findModelPartition` selects on coordinate count, not size, and the honest
+figure for the 132 real parts in the corpus is:
+
+| outcome | parts | share |
+| --- | --- | --- |
+| **model extracted** | **65** | **49 %** |
+| stub partition only | 46 | 35 % |
+| no Parasolid at all | 21 | 16 % |
+
+(Five further files on disk are 0-byte and are counted separately; the 21
+`.SLDASM` assemblies hold no geometry of their own by design — they reference
+their components.)
+
+49 % is lower than what was reported before. The reader did not get worse; the
+measurement got honest.
+
 ## 4. What is still closed
 
 The three Parasolid streams account for only **4–8 % of the file**. The other

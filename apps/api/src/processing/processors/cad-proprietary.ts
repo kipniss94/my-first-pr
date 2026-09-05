@@ -4,7 +4,7 @@ import type { JobResult, NativeCadDocument } from '@docuview/shared';
 import { ProcessingError, type ProcessorContext } from '../context.js';
 import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
-import { findParasolidPartitions, isSolidWorksPackage } from '../sldprt/container.js';
+import { findModelPartition, findParasolidPartitions, isSolidWorksPackage } from '../sldprt/container.js';
 import { processOcct } from './cad-occt.js';
 
 /**
@@ -73,20 +73,29 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
    * tools accept, and having it is what lets the converter path work on a
    * standard `.x_t` rather than on a closed SolidWorks file.
    */
-  let parasolid: { bytes: number; version: string | null } | null = null;
+  let parasolid: { bytes: number; version: string | null; coordinates: number } | null = null;
+  /** The model partition is missing, but the stub that references it is here. */
+  let stubOnly = false;
   // Not gated on recognising the package: the payload scan verifies itself, so
   // trying it costs one pass and cannot produce a wrong answer, whereas gating
   // on a signature meant a stricter recogniser silently discarded geometry the
   // reader was perfectly able to extract.
-  const partitions = findParasolidPartitions(buffer);
-  const model = partitions.find((partition) => partition.data.length > 2048);
+  const model = findModelPartition(buffer);
   if (model) {
     await fs.mkdir(request.assetsDir, { recursive: true });
     await fs.writeFile(path.join(request.assetsDir, 'geometry.x_t'), model.data);
-    parasolid = { bytes: model.data.length, version: model.version };
-    ctx.log('info', `extracted a ${model.data.length} B Parasolid partition (modeller ${model.version})`);
+    parasolid = { bytes: model.data.length, version: model.version, coordinates: model.coordinates };
+    ctx.log('info', `extracted a ${model.data.length} B Parasolid model with ${model.coordinates} coordinates (modeller ${model.version})`);
+  } else if (findParasolidPartitions(buffer).length > 0) {
+    stubOnly = true;
+    // The distinction matters to the person looking at the file. A stub-only
+    // part is not a file we failed to parse — it is one whose model SolidWorks
+    // put behind the codec, leaving a reference frame we can read and nothing
+    // to draw. Writing that stub out as `geometry.x_t` would hand someone an
+    // empty solid and call it geometry.
+    ctx.log('warn', 'only stub Parasolid streams here: the model partition is behind the codec');
   } else if (isSolidWorksPackage(buffer)) {
-    ctx.log('warn', 'SolidWorks package recognised, but its model partition is not plain zlib');
+    ctx.log('warn', 'SolidWorks package recognised, but no Parasolid stream is plain zlib');
   }
 
   ctx.progress('processing', 55);
@@ -130,7 +139,9 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     components: info.references.map((name) => ({ name, status: 'missing', jobId: null, fileId: null })),
     geometry: 'preview-only',
     note: parasolid
-      ? `The exact geometry was found inside this file — a ${(parasolid.bytes / 1024).toFixed(1)} KB Parasolid solid, written by modeller ${parasolid.version ?? 'unknown'} — and extracted. Drawing it needs a Parasolid reader, which is still being built; until then the solid can be downloaded as a standard .x_t, or a configured converter will turn it into geometry you can measure.`
+      ? `The exact geometry was found inside this file — a ${(parasolid.bytes / 1024).toFixed(1)} KB Parasolid solid carrying ${parasolid.coordinates} distinct coordinates, written by modeller ${parasolid.version ?? 'unknown'} — and extracted. Drawing it needs a Parasolid reader, which is still being built; until then the solid can be downloaded as a standard .x_t, or a configured converter will turn it into geometry you can measure.`
+      : stubOnly
+      ? `This file names its solid but does not hand it over: SolidWorks wrote the reference frame in the clear and kept the model itself behind a codec we cannot open yet. That is a different thing from a file we failed to parse, and it is why nothing is offered for download here rather than an empty solid. About a third of the parts tested behave this way. A configured CAD converter reads this one.`
       : opaque
         ? `This ${info.application} file keeps all of its content behind a codec we cannot open yet. The package structure reads fine — the parts are named and sized — but their bytes are indistinguishable from random, so there is nothing here to show. Around a third of the files tested behave this way; the rest open. A configured CAD converter handles this one.`
         : previewAsset
@@ -162,6 +173,7 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
       hasPreview: Boolean(previewAsset),
       parasolidBytes: parasolid?.bytes ?? 0,
       parasolidVersion: parasolid?.version ?? null,
+      parasolidCoordinates: parasolid?.coordinates ?? 0,
       parasolidUrl: parasolid ? `/api/v1/files/${request.fileId}/assets/geometry.x_t` : null,
       componentCount: info.references.length,
       // The pipeline turns these into the job's assembly state, which is what
