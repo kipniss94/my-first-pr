@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Text;
@@ -20,8 +21,9 @@ using Intermech.Interfaces.Client;
 //        «Текст задачи органайзера» = «Связаться с ips://object/<ид. версии>»;
 //   3) включает текущего пользователя IPS в состав задачи связью
 //      «Связь задачи органайзера с ресурсами» и заполняет атрибуты связи:
-//        «Напоминание о задаче органайзера» = да;
-//        «Напомнить за (интервал)»          = 15 мин.
+//        «Напоминание о задаче органайзера»          = да;
+//        «Показывать напоминание во всплывающем окне» = да;
+//        «Напомнить за (интервал)»                   = за 15 мин.
 //
 // Все наименования типов, связей и атрибутов вынесены в константы в начале
 // класса — при отличиях в конкретной базе правятся только они.
@@ -41,6 +43,7 @@ public class Script
 	private const string AttrTaskTextName = "Текст задачи органайзера";
 	private const string AttrReminderName = "Напоминание о задаче органайзера";
 	private const string AttrRemindBeforeName = "Напомнить за (интервал)";
+	private const string AttrShowPopupName = "Показывать напоминание во всплывающем окне";
 
 	// Глобальный идентификатор типа связи «Связь задачи органайзера с ресурсами».
 	// Если он известен в вашей базе — впишите его сюда: тип связи будет найден
@@ -58,6 +61,10 @@ public class Script
 	// cadd9cca-306c-11d8-b4e9-00304f19f545, размер 10) со списком допустимых
 	// значений, поэтому пишется ровно то значение, которое есть в списке.
 	private const string RemindBeforeText = "за 15 мин.";
+
+	// По этому фрагменту нужное значение отыскивается в самом списке
+	// допустимых значений атрибута, если ни одно из написаний не подошло.
+	private const string RemindBeforeFragment = "15";
 
 	private const string DialogCaption = "Задача органайзера";
 	private const string ObjectLinkPrefix = "ips://object/";
@@ -186,17 +193,8 @@ public class Script
 					// Тип атрибутов связи зависит от настройки базы, поэтому значение
 					// подбирается перебором: первое подошедшее записывается.
 					SetValue(taskUserRelation, AttrReminderName, warnings, true, 1, "Да");
-
-					// «Напомнить за (интервал)»: строка из списка допустимых значений.
-					// Это же значение стоит у атрибута по умолчанию, поэтому чаще
-					// всего оно уже записано при создании связи — тогда Assign
-					// ничего не меняет. Запасные варианты — на случай другого
-					// написания в списке значений конкретной базы.
-					SetValue(taskUserRelation, AttrRemindBeforeName, warnings,
-						RemindBeforeText,
-						"15 мин.",
-						"за 15 минут",
-						"15 минут");
+					SetValue(taskUserRelation, AttrShowPopupName, warnings, true, 1, "Да");
+					SetRemindBefore(taskUserRelation, warnings);
 				}
 			}
 
@@ -284,17 +282,16 @@ public class Script
 	// Присвоение значения атрибуту объекта
 	private void SetValue(IDBObject obj, string attributeName, List<string> warnings, params object[] values)
 	{
-		Assign(obj.Attributes.FindByName(attributeName), attributeName, warnings, values);
+		SetAttributeValue(obj.Attributes.FindByName(attributeName), attributeName, warnings, values);
 	}
 
 	// Присвоение значения атрибуту связи
 	private void SetValue(IDBRelation relation, string attributeName, List<string> warnings, params object[] values)
 	{
-		Assign(relation.Attributes.FindByName(attributeName), attributeName, warnings, values);
+		SetAttributeValue(relation.Attributes.FindByName(attributeName), attributeName, warnings, values);
 	}
 
-	// Записывает в атрибут первое из значений, которое принимает его тип.
-	private void Assign(IDBAttribute attribute, string attributeName, List<string> warnings, object[] values)
+	private void SetAttributeValue(IDBAttribute attribute, string attributeName, List<string> warnings, object[] values)
 	{
 		if (attribute == null)
 		{
@@ -302,35 +299,62 @@ public class Script
 			return;
 		}
 
-		// Текущее значение: у атрибутов со значением по умолчанию нужное
-		// значение может быть записано ещё при создании объекта или связи.
-		string currentValue = null;
-		try
+		List<string> attempts = new List<string>();
+		if (TryAssign(attribute, values, attempts))
+			return;
+
+		warnings.Add(BuildAssignWarning(attribute, attributeName, attempts));
+	}
+
+	// «Напомнить за (интервал)» — строка из списка допустимых значений.
+	// Сначала пробуются известные написания, затем — значение, найденное
+	// в самом списке допустимых значений атрибута (на случай другого
+	// написания в конкретной базе).
+	private void SetRemindBefore(IDBRelation relation, List<string> warnings)
+	{
+		IDBAttribute attribute = relation.Attributes.FindByName(AttrRemindBeforeName);
+		if (attribute == null)
 		{
-			if (attribute.Value != null)
-				currentValue = attribute.Value.ToString().Trim();
-		}
-		catch
-		{
-			// значение недоступно для чтения — считаем его неизвестным
+			warnings.Add("атрибут «" + AttrRemindBeforeName + "» не найден");
+			return;
 		}
 
-		// Причины отказа по каждому варианту — попадают в сообщение, если
-		// не подойдёт ни один из них.
 		List<string> attempts = new List<string>();
+
+		object[] values = new object[] { RemindBeforeText, "15 мин.", "за 15 минут", "15 минут" };
+		if (TryAssign(attribute, values, attempts))
+			return;
+
+		object listValue = FindValueInList(attribute, RemindBeforeFragment);
+		if (listValue != null && TryAssign(attribute, new object[] { listValue }, attempts))
+			return;
+
+		warnings.Add(BuildAssignWarning(attribute, AttrRemindBeforeName, attempts));
+	}
+
+	// Записывает в атрибут первое из значений, которое принимает его тип.
+	// Причины отказа по каждому варианту складываются в attempts.
+	private bool TryAssign(IDBAttribute attribute, object[] values, List<string> attempts)
+	{
+		// У атрибутов со значением по умолчанию нужное значение может быть
+		// записано ещё при создании объекта или связи — тогда ничего не меняем.
+		string currentValue = ReadText(attribute);
 
 		foreach (object value in values)
 		{
-			if (value != null && currentValue != null &&
+			if (value == null)
+				continue;
+
+			if (currentValue != null &&
 				string.Compare(currentValue, value.ToString().Trim(), StringComparison.CurrentCultureIgnoreCase) == 0)
 			{
-				return; // нужное значение уже записано
+				return true;
 			}
 
 			try
 			{
 				attribute.Value = value;
-				return;
+				return true;
 			}
 			catch (Exception ex)
 			{
@@ -338,20 +362,37 @@ public class Script
 			}
 		}
 
+		return false;
+	}
+
+	// Текущее значение атрибута строкой; null, если значение не задано
+	// или недоступно для чтения.
+	private string ReadText(IDBAttribute attribute)
+	{
+		try
+		{
+			return attribute.Value == null ? null : attribute.Value.ToString().Trim();
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	// Замечание с текущим значением атрибута и причинами отказа.
+	private string BuildAssignWarning(IDBAttribute attribute, string attributeName, List<string> attempts)
+	{
 		StringBuilder message = new StringBuilder();
 		message.Append("не удалось записать значение в атрибут «" + attributeName + "»");
 
+		string currentValue = ReadText(attribute);
 		if (!string.IsNullOrEmpty(currentValue))
-		{
-			message.Append(", оставлено текущее значение «" + currentValue + "»");
-		}
-		else
-		{
-			foreach (string attempt in attempts)
-				message.Append(Environment.NewLine + "  " + attempt);
-		}
+			message.Append(", текущее значение «" + currentValue + "»");
 
-		warnings.Add(message.ToString());
+		foreach (string attempt in attempts)
+			message.Append(Environment.NewLine + "  " + attempt);
+
+		return message.ToString();
 	}
 
 	// Краткое описание значения: тип и содержимое.
@@ -361,6 +402,90 @@ public class Script
 			return "null";
 
 		return value.GetType().Name + " \"" + value + "\"";
+	}
+
+	// Значение из списка допустимых значений атрибута, содержащее заданный
+	// фрагмент. Способ получения списка зависит от версии API, поэтому
+	// проверяются и свойства обработчика атрибута, и методы MetaDataHelper,
+	// принимающие идентификатор атрибута.
+	private object FindValueInList(IDBAttribute attribute, string fragment)
+	{
+		BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
+
+		string[] propertyNames = new string[]
+		{
+			"PossibleValues", "AllowedValues", "ListValues", "ValuesList", "EnumValues", "Values"
+		};
+
+		foreach (string propertyName in propertyNames)
+		{
+			PropertyInfo property = attribute.GetType().GetProperty(propertyName, flags);
+			if (property == null || !property.CanRead)
+				continue;
+
+			try
+			{
+				object match = FindInEnumerable(property.GetValue(attribute, null), fragment);
+				if (match != null)
+					return match;
+			}
+			catch
+			{
+				// свойство недоступно — пробуем следующее
+			}
+		}
+
+		int attributeID;
+		try
+		{
+			attributeID = attribute.AttributeID;
+		}
+		catch
+		{
+			return null;
+		}
+
+		foreach (MethodInfo method in typeof(MetaDataHelper).GetMethods(BindingFlags.Public | BindingFlags.Static))
+		{
+			ParameterInfo[] methodParameters = method.GetParameters();
+			if (methodParameters.Length != 1 || methodParameters[0].ParameterType != typeof(int))
+				continue;
+
+			if (method.Name.IndexOf("Value", StringComparison.OrdinalIgnoreCase) < 0)
+				continue;
+
+			try
+			{
+				object match = FindInEnumerable(method.Invoke(null, new object[] { attributeID }), fragment);
+				if (match != null)
+					return match;
+			}
+			catch
+			{
+				// метод не подошёл — пробуем следующий
+			}
+		}
+
+		return null;
+	}
+
+	// Первый элемент перечислимого результата, содержащий заданный фрагмент.
+	private object FindInEnumerable(object source, string fragment)
+	{
+		IEnumerable items = source as IEnumerable;
+		if (items == null || source is string)
+			return null;
+
+		foreach (object item in items)
+		{
+			if (item == null)
+				continue;
+
+			if (item.ToString().IndexOf(fragment, StringComparison.CurrentCultureIgnoreCase) >= 0)
+				return item;
+		}
+
+		return null;
 	}
 
 	// =======================================================================
