@@ -12,6 +12,11 @@
  * in metres internally while an engineer reads millimetres off the drawing.
  * Halves are searched too: a part is very often modelled about its own centre,
  * so a 45.5 mm length shows up as ±22.75 mm.
+ *
+ * Both byte orders are searched. That is not defensive coding: the geometry in
+ * a SolidWorks part lives in a Parasolid partition, and Parasolid stores its
+ * reals **big-endian**. Searching only little-endian finds nothing at all, which
+ * is exactly what this tool did before the first real file was examined.
  */
 
 import fs from 'node:fs/promises';
@@ -24,6 +29,7 @@ interface Hit {
   stream: string;
   offset: number;
   width: 4 | 8;
+  order: 'LE' | 'BE';
   stored: number;
   /** Which interpretation matched, e.g. `45.5 mm as metres`. */
   as: string;
@@ -53,8 +59,14 @@ function scan(stream: string, data: Buffer, values: number[]): Hit[] {
   const hits: Hit[] = [];
   const targets = values.flatMap(interpretations);
 
-  for (const width of [8, 4] as const) {
-    const read = width === 8 ? data.readDoubleLE.bind(data) : data.readFloatLE.bind(data);
+  const readers: { width: 4 | 8; order: 'LE' | 'BE'; read: (at: number) => number }[] = [
+    { width: 8, order: 'BE', read: (at) => data.readDoubleBE(at) },
+    { width: 8, order: 'LE', read: (at) => data.readDoubleLE(at) },
+    { width: 4, order: 'BE', read: (at) => data.readFloatBE(at) },
+    { width: 4, order: 'LE', read: (at) => data.readFloatLE(at) },
+  ];
+
+  for (const { width, order, read } of readers) {
     // Step one byte: a value can sit at an offset that is not a multiple of its
     // own width when it follows a variable-length header.
     for (let offset = 0; offset + width <= data.length; offset += 1) {
@@ -70,7 +82,7 @@ function scan(stream: string, data: Buffer, values: number[]): Hit[] {
         // float32 cannot hold a double's precision, so compare at its own scale.
         const matched = width === 8 ? close(stored, target) : close(stored, Math.fround(target));
         if (matched) {
-          hits.push({ stream, offset, width, stored, as });
+          hits.push({ stream, offset, width, order, stored, as });
           break;
         }
       }
@@ -128,7 +140,9 @@ async function main(): Promise<void> {
     // Cluster hits: a coordinate array produces many neighbouring offsets, and
     // that clustering is a stronger signal than any single hit.
     for (const hit of hits.slice(0, 15)) {
-      console.log(`  @${String(hit.offset).padStart(8)} f${hit.width * 8} = ${hit.stored.toPrecision(10)}   ${hit.as}`);
+      console.log(
+        `  @${String(hit.offset).padStart(8)} f${hit.width * 8}${hit.order} = ${hit.stored.toPrecision(10)}   ${hit.as}`,
+      );
     }
     if (hits.length > 15) console.log(`  … and ${hits.length - 15} more`);
 
