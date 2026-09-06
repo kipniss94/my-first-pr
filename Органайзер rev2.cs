@@ -182,7 +182,7 @@ public class Script
 						message += " (похожие типы связей: " + string.Join("; ", similarRelations.ToArray()) + ")";
 
 					warnings.Add(message);
-					ShowWarnings(warnings);
+					ShowResult(sourceName, taskStart, warnings);
 					return parameters;
 				}
 
@@ -204,7 +204,7 @@ public class Script
 				}
 			}
 
-			ShowWarnings(warnings);
+			ShowResult(sourceName, taskStart, warnings);
 		}
 		catch (Exception ex)
 		{
@@ -577,13 +577,23 @@ public class Script
 		MessageBox.Show(text, DialogCaption, MessageBoxButtons.OK, icon);
 	}
 
-	// Итоговое сообщение о том, что осталось незаполненным (если такое есть).
-	private void ShowWarnings(List<string> warnings)
+	// Итоговое сообщение: о созданной задаче и о том, что осталось незаполненным.
+	private void ShowResult(string sourceName, DateTime taskStart, List<string> warnings)
 	{
-		if (warnings == null || warnings.Count == 0)
-			return;
+		StringBuilder text = new StringBuilder("Запланирован звонок");
 
-		StringBuilder text = new StringBuilder("Задача органайзера создана, но заполнены не все данные:");
+		if (!string.IsNullOrEmpty(sourceName))
+			text.Append(" с «" + sourceName + "»");
+
+		text.Append(" на " + taskStart.ToString("dd.MM.yyyy HH:mm") + ".");
+
+		if (warnings == null || warnings.Count == 0)
+		{
+			Show(text.ToString(), MessageBoxIcon.Information);
+			return;
+		}
+
+		text.Append(Environment.NewLine + Environment.NewLine + "Заполнены не все данные:");
 		foreach (string warning in warnings)
 			text.Append(Environment.NewLine + "- " + warning);
 
