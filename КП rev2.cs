@@ -61,10 +61,9 @@ public class Script
 	private const int MaxRelationTypeID = 10000;
 
 	// --- тексты ---
-	private const string OfferSubject =
-		"Коммерческое предложение на приобретение неисключительного права использования программного обеспечения ОДО «ИНТЕРМЕХ»";
+	private const string OfferSubject = "Коммерческое предложение ОДО «ИНТЕРМЕХ»";
 	private const string OfferBodyLine =
-		"Направляю Вам коммерческое предложение на приобретение неисключительного права использования программного обеспечения ОДО «ИНТЕРМЕХ»";
+		"Направляю Вам коммерческое предложение на программное обеспечение ИНТЕРМЕХ — во вложении.";
 	private const string OfferForumTopic = "Отправка КП";
 	private const string OfferForumSubject = "КП";
 
@@ -498,13 +497,15 @@ public class Script
 	}
 
 	// Ссылка на объект, с карточки которого вызван скрипт. Подписью служит
-	// описатель объекта, а если он пуст — обозначение документа.
+	// обозначение документа: описатель объекта берётся только если обозначение
+	// не заполнено (описатель содержит ещё и наименование — «КП0001/2026
+	// (Использовать только в качестве прототипа)»).
 	private string BuildObjectRef(IDBObject currentObj, string docDesignation)
 	{
-		string title = currentObj.Caption;
+		string title = docDesignation;
 
 		if (string.IsNullOrEmpty(title))
-			title = docDesignation;
+			title = currentObj.Caption;
 
 		if (string.IsNullOrEmpty(title))
 			title = "документ";
