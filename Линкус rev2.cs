@@ -148,8 +148,14 @@ public class Script
 			DateTime lastContact = DateTime.Now;
 			DateTime nextContact = dialogResult.SelectedDate.Date;
 
-			bool lastSaved = SetDateValue(session, parentObj, AttrLastContactGuid, AttrLastContactName, lastContact, problems);
-			bool nextSaved = SetDateValue(session, parentObj, AttrNextContactGuid, AttrNextContactName, nextContact, problems);
+			// Перебранные способы добавления атрибута: попадают в сообщение,
+			// если добавить атрибут так и не удалось.
+			List<string> diagnostics = new List<string>();
+
+			bool lastSaved = SetDateValue(session, parentObj, AttrLastContactGuid, AttrLastContactName,
+				lastContact, problems, diagnostics);
+			bool nextSaved = SetDateValue(session, parentObj, AttrNextContactGuid, AttrNextContactName,
+				nextContact, problems, diagnostics);
 
 			// ==================================================
 			// 5. ЗАПИСЬ В ОБСУЖДЕНИЕ ПРЕДПРИЯТИЯ
@@ -168,7 +174,7 @@ public class Script
 				problems.Add("запись в обсуждение: " + forumEx.Message);
 			}
 
-			ShowResult(lastSaved, nextSaved, lastContact, nextContact, problems);
+			ShowResult(lastSaved, nextSaved, lastContact, nextContact, problems, diagnostics);
 		}
 		catch (Exception ex)
 		{
@@ -202,9 +208,9 @@ public class Script
 	// Запись даты с проверкой результата: значение перечитывается, поэтому
 	// «тихих» пропусков записи больше не будет.
 	private bool SetDateValue(IUserSession session, IDBObject obj, Guid attributeGuid,
-		string attributeName, DateTime value, List<string> problems)
+		string attributeName, DateTime value, List<string> problems, List<string> diagnostics)
 	{
-		IDBAttribute attribute = EnsureAttribute(session, obj, attributeGuid);
+		IDBAttribute attribute = EnsureAttribute(session, obj, attributeGuid, attributeName, value, diagnostics);
 		if (attribute == null)
 		{
 			problems.Add("атрибут «" + attributeName + "» отсутствует у предприятия, и добавить его не удалось");
@@ -241,12 +247,15 @@ public class Script
 
 	// Обработчик атрибута объекта.
 	//
-	// Если атрибут объекту ещё не присвоен (у предприятия дата ни разу
-	// не заполнялась), GetAttributeByGuid возвращает null — раньше запись
-	// в этом случае молча пропускалась. Здесь атрибут сначала добавляется
-	// объекту, и только потом берётся его обработчик. Способ добавления
-	// зависит от версии API, поэтому варианты перебираются по именам методов.
-	private IDBAttribute EnsureAttribute(IUserSession session, IDBObject obj, Guid attributeGuid)
+	// Атрибуты «Дата последнего/следующего контакта» имеют признак «Атрибут
+	// может быть добавлен вручную»: пока значение не заполнено, объекту они
+	// не присвоены и GetAttributeByGuid возвращает null (раньше запись в этом
+	// случае молча пропускалась). Здесь атрибут сначала добавляется объекту.
+	// Метод добавления в разных версиях API называется по-разному, поэтому
+	// подходящий подбирается по сигнатуре; перебранные варианты складываются
+	// в diagnostics и попадают в сообщение, если ни один не сработал.
+	private IDBAttribute EnsureAttribute(IUserSession session, IDBObject obj, Guid attributeGuid,
+		string attributeName, object value, List<string> diagnostics)
 	{
 		IDBAttribute attribute = obj.GetAttributeByGuid(attributeGuid);
 		if (attribute != null)
@@ -259,66 +268,128 @@ public class Script
 		}
 		catch
 		{
-			return null; // атрибута с таким идентификатором нет в базе
+			// идентификатор атрибута определить не удалось — пробуем по GUID и имени
 		}
 
-		if (attributeID <= 0)
-			return null;
-
-		// 1) коллекция атрибутов объекта
-		TryInvoke(obj.Attributes, new string[] { "Add", "AddAttribute", "AddNew" },
-			new object[] { attributeID });
-
-		attribute = obj.GetAttributeByGuid(attributeGuid);
+		// 1) перегрузки чтения атрибута с признаком «создать, если нет»
+		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
+			new string[] { "GetAttribute" }, diagnostics);
 		if (attribute != null)
 			return attribute;
 
-		// 2) сам объект
-		TryInvoke(obj, new string[] { "AddAttribute", "AddObjectAttribute" },
-			new object[] { attributeID });
-
-		attribute = obj.GetAttributeByGuid(attributeGuid);
+		// 2) методы добавления у коллекции атрибутов объекта
+		attribute = TryCalls(obj, obj.Attributes, attributeGuid, attributeID, attributeName, value,
+			new string[] { "Add", "Create", "Insert", "New" }, diagnostics);
 		if (attribute != null)
 			return attribute;
 
-		// 3) пользовательская сессия
-		TryInvoke(session, new string[] { "AddObjectAttribute" },
-			new object[] { obj.ObjectID, attributeID });
+		// 3) методы добавления у самого объекта
+		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
+			new string[] { "AddAttribute", "CreateAttribute", "AddObjectAttribute" }, diagnostics);
+		if (attribute != null)
+			return attribute;
 
-		return obj.GetAttributeByGuid(attributeGuid);
+		// 4) методы добавления у пользовательской сессии
+		return TryCalls(obj, session, attributeGuid, attributeID, attributeName, value,
+			new string[] { "AddObjectAttribute", "SetObjectAttributeValue", "SetObjectAttributesValues" },
+			diagnostics);
 	}
 
-	// Вызов первого подходящего метода по имени и количеству аргументов.
-	private bool TryInvoke(object target, string[] methodNames, object[] arguments)
+	// Перебор методов заданного объекта: аргументы подбираются по типам
+	// параметров, после каждого вызова проверяется, появился ли атрибут.
+	private IDBAttribute TryCalls(IDBObject obj, object target, Guid attributeGuid, int attributeID,
+		string attributeName, object value, string[] methodNames, List<string> diagnostics)
 	{
 		if (target == null)
-			return false;
+			return null;
 
 		foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
 		{
-			if (Array.IndexOf(methodNames, method.Name) < 0)
+			if (!NameStartsWithAny(method.Name, methodNames))
 				continue;
 
 			ParameterInfo[] methodParameters = method.GetParameters();
-			if (methodParameters.Length != arguments.Length)
+			object[] arguments = new object[methodParameters.Length];
+			bool suitable = true;
+
+			for (int i = 0; i < methodParameters.Length; i++)
+			{
+				Type parameterType = methodParameters[i].ParameterType;
+
+				if (parameterType == typeof(int))
+					arguments[i] = attributeID;
+				else if (parameterType == typeof(long))
+					arguments[i] = obj.ObjectID;
+				else if (parameterType == typeof(Guid))
+					arguments[i] = attributeGuid;
+				else if (parameterType == typeof(string))
+					arguments[i] = attributeName;
+				else if (parameterType == typeof(bool))
+					arguments[i] = true;
+				else if (parameterType == typeof(object) || parameterType == typeof(DateTime))
+					arguments[i] = value;
+				else
+				{
+					suitable = false; // тип параметра подобрать нельзя — метод пропускаем
+					break;
+				}
+			}
+
+			if (!suitable)
 				continue;
 
+			// пропускаем заведомо бесполезный вариант: чтение атрибута без признака создания
+			if (methodParameters.Length == 1 && method.Name.StartsWith("GetAttribute", StringComparison.Ordinal))
+				continue;
+
+			diagnostics.Add(target.GetType().Name + "." + method.Name + "(" + DescribeParameters(methodParameters) + ")");
+
+			object result;
 			try
 			{
-				object[] converted = new object[arguments.Length];
-				for (int i = 0; i < arguments.Length; i++)
-					converted[i] = Convert.ChangeType(arguments[i], methodParameters[i].ParameterType);
-
-				method.Invoke(target, converted);
-				return true;
+				result = method.Invoke(target, arguments);
 			}
 			catch
 			{
-				// сигнатура не подошла — пробуем следующий метод
+				continue; // сигнатура не подошла — пробуем следующий метод
 			}
+
+			IDBAttribute returned = result as IDBAttribute;
+			if (returned != null)
+				return returned;
+
+			IDBAttribute found = obj.GetAttributeByGuid(attributeGuid);
+			if (found != null)
+				return found;
+		}
+
+		return null;
+	}
+
+	private bool NameStartsWithAny(string methodName, string[] prefixes)
+	{
+		foreach (string prefix in prefixes)
+		{
+			if (methodName.StartsWith(prefix, StringComparison.Ordinal))
+				return true;
 		}
 
 		return false;
+	}
+
+	private string DescribeParameters(ParameterInfo[] methodParameters)
+	{
+		StringBuilder text = new StringBuilder();
+
+		foreach (ParameterInfo parameter in methodParameters)
+		{
+			if (text.Length > 0)
+				text.Append(", ");
+
+			text.Append(parameter.ParameterType.Name);
+		}
+
+		return text.ToString();
 	}
 
 	// =======================================================================
@@ -545,7 +616,7 @@ public class Script
 
 	// Итог: что записано в карточку предприятия и что не удалось.
 	private void ShowResult(bool lastSaved, bool nextSaved, DateTime lastContact, DateTime nextContact,
-		List<string> problems)
+		List<string> problems, List<string> diagnostics)
 	{
 		StringBuilder text = new StringBuilder();
 
@@ -572,6 +643,23 @@ public class Script
 		text.Append(Environment.NewLine + Environment.NewLine + "Замечания:");
 		foreach (string problem in problems)
 			text.Append(Environment.NewLine + "- " + problem);
+
+		// Если атрибут не удалось добавить, показываем перебранные методы API:
+		// по ним видно, какой вызов нужно прописать в скрипте явно.
+		if (!lastSaved && !nextSaved && diagnostics.Count > 0)
+		{
+			text.Append(Environment.NewLine + Environment.NewLine + "Опробованные методы API:");
+
+			List<string> shown = new List<string>();
+			foreach (string item in diagnostics)
+			{
+				if (shown.Contains(item))
+					continue;
+
+				shown.Add(item);
+				text.Append(Environment.NewLine + "- " + item);
+			}
+		}
 
 		Show(text.ToString(), MessageBoxIcon.Warning);
 	}
