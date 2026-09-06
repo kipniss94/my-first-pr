@@ -33,7 +33,7 @@ using Intermech.Client.Core;
 // Тексты письма и сообщения в обсуждении зависят от типа объекта:
 //   «Письмо» — тема берётся из атрибута «Тема сообщения», в теле «Письмо
 //              во вложении», в обсуждении «Отправка письма» / «Письмо
-//              направлено …»;
+//              <ссылка на объект> направлено <ссылка на контакт>»;
 //   остальные типы (коммерческое предложение) — тексты о КП.
 // ===========================================================================
 public class Script
@@ -66,11 +66,14 @@ public class Script
 	private const string OfferBodyLine =
 		"Направляю Вам коммерческое предложение на приобретение неисключительного права использования программного обеспечения ОДО «ИНТЕРМЕХ»";
 	private const string OfferForumTopic = "Отправка КП";
-	private const string OfferForumPrefix = "КП направлено ";
+	private const string OfferForumSubject = "КП";
 
 	private const string LetterBodyLine = "Письмо во вложении";
 	private const string LetterForumTopic = "Отправка письма";
-	private const string LetterForumPrefix = "Письмо направлено ";
+	private const string LetterForumSubject = "Письмо";
+
+	// Сообщение в обсуждении: «<Письмо|КП> <ссылка на объект> направлено <ссылка на контакт>»
+	private const string ForumSentText = " направлено ";
 
 	private const string DialogCaption = "Подготовка письма";
 
@@ -99,7 +102,7 @@ public class Script
 		public string Subject;
 		public string BodyLine;
 		public string ForumTopic;
-		public string ForumPrefix;
+		public string ForumSubject;
 	}
 
 	public AttributeValidationScriptParameters Execute(AttributeValidationScriptParameters parameters)
@@ -250,7 +253,8 @@ public class Script
 			try
 			{
 				SendMessage(session, parentId, profile.ForumTopic,
-					profile.ForumPrefix + "[ref=\"" + contactGuidStr + "\"]" + nameContTitle + "[/ref]");
+					profile.ForumSubject + " " + BuildObjectRef(currentObj, docDesignation) +
+					ForumSentText + BuildRef(contactGuidStr, nameContTitle));
 			}
 			catch (Exception forumEx)
 			{
@@ -435,7 +439,7 @@ public class Script
 				Subject = OfferSubject,
 				BodyLine = OfferBodyLine,
 				ForumTopic = OfferForumTopic,
-				ForumPrefix = OfferForumPrefix
+				ForumSubject = OfferForumSubject
 			};
 		}
 
@@ -448,7 +452,7 @@ public class Script
 			Subject = subject,
 			BodyLine = LetterBodyLine,
 			ForumTopic = LetterForumTopic,
-			ForumPrefix = LetterForumPrefix
+			ForumSubject = LetterForumSubject
 		};
 	}
 
@@ -479,6 +483,33 @@ public class Script
 		{
 			return false;
 		}
+	}
+
+	// =======================================================================
+	// ССЫЛКИ В ТЕКСТЕ ОБСУЖДЕНИЯ
+	// =======================================================================
+
+	// Ссылка на объект по его глобальному идентификатору: в обсуждении она
+	// отображается как наименование объекта и открывает его карточку
+	// (тот же механизм, которым оформлена ссылка на контакт).
+	private string BuildRef(string objectGuid, string text)
+	{
+		return "[ref=\"" + objectGuid + "\"]" + text + "[/ref]";
+	}
+
+	// Ссылка на объект, с карточки которого вызван скрипт. Подписью служит
+	// описатель объекта, а если он пуст — обозначение документа.
+	private string BuildObjectRef(IDBObject currentObj, string docDesignation)
+	{
+		string title = currentObj.Caption;
+
+		if (string.IsNullOrEmpty(title))
+			title = docDesignation;
+
+		if (string.IsNullOrEmpty(title))
+			title = "документ";
+
+		return BuildRef(currentObj.ObjectGUID.ToString(), title);
 	}
 
 	// Обращение: из «Иванов Иван Иванович» получаем «Иван Иванович».
