@@ -42,6 +42,7 @@ public class Script
 
 	// --- метаданные (GUID берутся из конфигуратора базы) ---
 	private readonly Guid RelationSimpleGuid = new Guid("cad00023-306c-11d8-b4e9-00304f19f545");
+	private readonly Guid RelationDocumentationGuid = new Guid("cad00154-306c-11d8-b4e9-00304f19f545");
 	private readonly Guid ContactTypeGuid = new Guid("7b228e7a-8f92-4121-8541-c64ecfbaf85d");
 	private readonly Guid AttrDesignationGuid = new Guid("cad0001f-306c-11d8-b4e9-00304f19f545");
 	private readonly Guid AttrPositionGuid = new Guid("2c31988f-7d95-465a-bf04-7fabef411061");
@@ -51,6 +52,13 @@ public class Script
 	// Тип объекта и атрибут, по которым письмо отличается от коммерческого предложения
 	private const string LetterTypeName = "Письмо";
 	private const string AttrMessageSubjectName = "Тема сообщения";
+
+	// Связь, которой канцелярский документ подчинён предприятию, если она
+	// не найдена по идентификатору RelationDocumentationGuid
+	private const string RelationDocumentationName = "Документация на изделие";
+
+	// Верхняя граница перебора идентификаторов типов связей (поиск по наименованию)
+	private const int MaxRelationTypeID = 10000;
 
 	// --- тексты ---
 	private const string OfferSubject =
@@ -67,9 +75,11 @@ public class Script
 	private const string DialogCaption = "Подготовка письма";
 
 	// --- параметры ожидания ---
-	private const int MaxFileValues = 20;      // сколько значений атрибута «Файлы» просматривать
-	private const int PdfWaitSeconds = 10;     // сколько ждать появления auth-файла (PDF)
-	private const int NotesWaitSeconds = 15;   // сколько ждать открытия письма в Notes
+	private const int MaxFileValues = 20;         // сколько значений атрибута «Файлы» просматривать
+	private const int AuthFileDelayMs = 1000;     // пауза перед первым чтением auth-файла
+	private const int PdfWaitSeconds = 10;        // сколько ещё ждать появления PDF
+	private const int NotesStartDelayMs = 3000;   // пауза на открытие письма в Notes
+	private const int NotesWaitSeconds = 15;      // сколько ещё ждать документ Notes
 
 	// Обёртка для ListBox: отображаем текст, возвращаем объект
 	private class ContactListItem
@@ -148,10 +158,10 @@ public class Script
 			List<int> relationTypes = new List<int>();
 			relationTypes.Add(MetaDataHelper.GetRelationTypeID(RelationSimpleGuid));
 
-			List<int> parentIds = Load(
-				compositionLoadService, session,
-				(int)currentObj.ObjectID, currentObj.ObjectType,
-				relationTypes, null, false);
+			// Коммерческое предложение подчинено предприятию простой связью,
+			// канцелярский документ (письмо) — связью «Документация на изделие»,
+			// поэтому родитель ищется по обоим типам связей.
+			List<int> parentIds = FindParentIds(compositionLoadService, session, currentObj, relationTypes);
 
 			if (parentIds.Count == 0)
 			{
@@ -159,21 +169,31 @@ public class Script
 				return parameters;
 			}
 
-			int parentId = parentIds[0];
-			IDBObject parentObj = session.GetObject(parentId);
-			if (parentObj == null)
-			{
-				Show("Не удалось получить родительский объект.", MessageBoxIcon.Error);
-				return parameters;
-			}
-
 			List<int> filterTypes = new List<int>();
 			filterTypes.Add(MetaDataHelper.GetObjectTypeID(ContactTypeGuid));
 
-			List<int> contactIds = Load(
-				compositionLoadService, session,
-				parentId, parentObj.ObjectType,
-				relationTypes, filterTypes, true);
+			// Родителей может быть несколько: берём первого, у которого есть контакты.
+			int parentId = -1;
+			List<int> contactIds = new List<int>();
+
+			foreach (int candidateId in parentIds)
+			{
+				IDBObject candidate = session.GetObject(candidateId);
+				if (candidate == null)
+					continue;
+
+				List<int> candidateContacts = Load(
+					compositionLoadService, session,
+					candidateId, candidate.ObjectType,
+					relationTypes, filterTypes, true);
+
+				if (candidateContacts.Count == 0)
+					continue;
+
+				parentId = candidateId;
+				contactIds = candidateContacts;
+				break;
+			}
 
 			if (contactIds.Count == 0)
 			{
@@ -280,10 +300,13 @@ public class Script
 				return parameters;
 			}
 
-			notesWS = Activator.CreateInstance(wsType);
+			// Notes должен успеть открыть и отрисовать письмо: обращение к документу
+			// сразу после mailto возвращает ещё не готовое письмо, и текст с вложением
+			// в него не попадают. Поэтому сначала пауза, и только затем — ожидание
+			// документа с опросом (для медленных машин).
+			Thread.Sleep(NotesStartDelayMs);
 
-			// Notes открывает письмо не мгновенно: ждём появления документа,
-			// а не фиксированную паузу.
+			notesWS = Activator.CreateInstance(wsType);
 			uiDoc = WaitForNotesDocument(notesWS);
 
 			if (uiDoc == null)
@@ -317,6 +340,84 @@ public class Script
 		}
 
 		return parameters;
+	}
+
+	// =======================================================================
+	// ПОИСК РОДИТЕЛЬСКОГО ОБЪЕКТА
+	// =======================================================================
+
+	// Родители ищутся по простой связи и связи «Документация на изделие»;
+	// если так ничего не найдено — по всем типам связей сразу.
+	private List<int> FindParentIds(
+		ICompositionLoadService compositionLoadService,
+		IUserSession session,
+		IDBObject currentObj,
+		List<int> simpleRelationTypes)
+	{
+		List<int> relationTypes = new List<int>(simpleRelationTypes);
+
+		int documentationTypeID = ResolveDocumentationRelationTypeID();
+		if (documentationTypeID > 0 && !relationTypes.Contains(documentationTypeID))
+			relationTypes.Add(documentationTypeID);
+
+		List<int> parentIds = Load(
+			compositionLoadService, session,
+			(int)currentObj.ObjectID, currentObj.ObjectType,
+			relationTypes, null, false);
+
+		if (parentIds.Count > 0)
+			return parentIds;
+
+		// Запасной вариант: родители по любым типам связей
+		try
+		{
+			return Load(
+				compositionLoadService, session,
+				(int)currentObj.ObjectID, currentObj.ObjectType,
+				null, null, false);
+		}
+		catch
+		{
+			return parentIds;
+		}
+	}
+
+	// Идентификатор связи «Документация на изделие»: сначала по глобальному
+	// идентификатору, затем — перебором наименований типов связей (метода
+	// поиска типа связи по имени в MetaDataHelper нет).
+	private int ResolveDocumentationRelationTypeID()
+	{
+		try
+		{
+			int relationTypeID = MetaDataHelper.GetRelationTypeID(RelationDocumentationGuid);
+			if (relationTypeID > 0)
+				return relationTypeID;
+		}
+		catch
+		{
+			// в этой базе такого идентификатора нет — ищем по наименованию
+		}
+
+		for (int relationTypeID = 1; relationTypeID <= MaxRelationTypeID; relationTypeID++)
+		{
+			string name;
+			try
+			{
+				name = MetaDataHelper.GetRelationTypeName(relationTypeID);
+			}
+			catch
+			{
+				continue;
+			}
+
+			if (!string.IsNullOrEmpty(name) &&
+				string.Compare(name.Trim(), RelationDocumentationName, StringComparison.CurrentCultureIgnoreCase) == 0)
+			{
+				return relationTypeID;
+			}
+		}
+
+		return -1;
 	}
 
 	// =======================================================================
@@ -428,6 +529,9 @@ public class Script
 	// поэтому чтение повторяется до PdfWaitSeconds секунд.
 	private string WaitForPdf(IDBObject currentObj, string fileNameBase)
 	{
+		// Первое чтение — после паузы: auth-файл формируется асинхронно.
+		Thread.Sleep(AuthFileDelayMs);
+
 		for (int second = 0; second < PdfWaitSeconds; second++)
 		{
 			string path = ExtractPdfToDisk(currentObj, fileNameBase);
