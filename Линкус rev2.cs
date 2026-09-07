@@ -91,7 +91,6 @@ public class Script
 	// Данные, нужные для записи результата после закрытия окна
 	private class CallContext
 	{
-		public IUserSession Session;
 		public int ParentId;
 		public string ContactGuid;
 		public string ContactTitle;
@@ -163,7 +162,6 @@ public class Script
 			// как скрипт завершится (CompleteCall).
 			// ==================================================
 			CallContext context = new CallContext();
-			context.Session = session;
 			context.ParentId = parentIds[0];
 			context.ContactGuid = contact.ObjectGUID.ToString();
 			context.ContactTitle = contactTitle;
@@ -211,251 +209,67 @@ public class Script
 	// между звонком и вводом комментария пользователь мог работать в IPS.
 	private void CompleteCall(CallContext context, InputResult result)
 	{
+		bool lastSaved = false;
+		bool nextSaved = false;
+		string taskLine = null;
+
+		DateTime lastContact = DateTime.Now;
+		DateTime nextContact = result.SelectedDate.Date;
+
+		// Перебранные способы добавления атрибута: попадают в сообщение,
+		// если добавить атрибут так и не удалось.
+		List<string> diagnostics = new List<string>();
+
 		try
 		{
-			IDBObject parentObj = context.Session.GetObject(context.ParentId);
-			if (parentObj == null)
+			// Скрипт к этому моменту уже завершился, а объекты сервера приложений
+			// вне SessionKeeper использовать нельзя — поэтому сессия берётся заново.
+			using (SessionKeeper keeper = new SessionKeeper())
 			{
-				Show("Не удалось получить предприятие (идентификатор " + context.ParentId + ").", MessageBoxIcon.Error);
-				return;
+				IUserSession session = keeper.Session;
+
+				IDBObject parentObj = session.GetObject(context.ParentId);
+				if (parentObj == null)
+				{
+					Show("Не удалось получить предприятие (идентификатор " + context.ParentId + ").",
+						MessageBoxIcon.Error);
+					return;
+				}
+
+				lastSaved = SetDateValue(session, parentObj, AttrLastContactGuid, AttrLastContactName,
+					lastContact, context.Problems, diagnostics);
+				nextSaved = SetDateValue(session, parentObj, AttrNextContactGuid, AttrNextContactName,
+					nextContact, context.Problems, diagnostics);
+
+				// Запись в обсуждение предприятия
+				try
+				{
+					StringBuilder text = new StringBuilder();
+					text.Append("Результат общения с [ref=\"" + context.ContactGuid + "\"]" + context.ContactTitle + "[/ref]: ");
+					text.Append(Environment.NewLine);
+					text.Append(result.Comment == null ? string.Empty : result.Comment.Trim());
+
+					SendMessage(session, context.ParentId, ForumTopic, text.ToString());
+				}
+				catch (Exception forumEx)
+				{
+					context.Problems.Add("запись в обсуждение: " + forumEx.Message);
+				}
+
+				// Постановка задачи органайзера — если отмечена галочка в окне
+				if (result.CreateTask)
+					taskLine = CreateOrganizerTask(session, parentObj, nextContact, context.Problems);
 			}
-
-			DateTime lastContact = DateTime.Now;
-			DateTime nextContact = result.SelectedDate.Date;
-
-			// Перебранные способы добавления атрибута: попадают в сообщение,
-			// если добавить атрибут так и не удалось.
-			List<string> diagnostics = new List<string>();
-
-			bool lastSaved = SetDateValue(context.Session, parentObj, AttrLastContactGuid, AttrLastContactName,
-				lastContact, context.Problems, diagnostics);
-			bool nextSaved = SetDateValue(context.Session, parentObj, AttrNextContactGuid, AttrNextContactName,
-				nextContact, context.Problems, diagnostics);
-
-			try
-			{
-				StringBuilder text = new StringBuilder();
-				text.Append("Результат общения с [ref=\"" + context.ContactGuid + "\"]" + context.ContactTitle + "[/ref]: ");
-				text.Append(Environment.NewLine);
-				text.Append(result.Comment == null ? string.Empty : result.Comment.Trim());
-
-				SendMessage(context.Session, context.ParentId, ForumTopic, text.ToString());
-			}
-			catch (Exception forumEx)
-			{
-				context.Problems.Add("запись в обсуждение: " + forumEx.Message);
-			}
-
-			// Постановка задачи органайзера — если отмечена галочка в окне
-			string taskLine = null;
-			if (result.CreateTask)
-				taskLine = CreateOrganizerTask(context.Session, parentObj, nextContact, context.Problems);
-
-			ShowResult(lastSaved, nextSaved, lastContact, nextContact, taskLine, context.Problems, diagnostics);
 		}
 		catch (Exception ex)
 		{
 			Show("Ошибка при записи результата звонка: " + ex.Message, MessageBoxIcon.Error);
-		}
-	}
-
-	// =======================================================================
-	// АТРИБУТЫ
-	// =======================================================================
-
-	private string GetAttributeText(IDBObject obj, Guid attributeGuid)
-	{
-		IDBAttribute attribute = obj.GetAttributeByGuid(attributeGuid);
-		return (attribute == null || attribute.Value == null)
-			? string.Empty
-			: attribute.Value.ToString().Trim();
-	}
-
-	// Запись даты с проверкой результата: значение перечитывается, поэтому
-	// «тихих» пропусков записи больше не будет.
-	private bool SetDateValue(IUserSession session, IDBObject obj, Guid attributeGuid,
-		string attributeName, DateTime value, List<string> problems, List<string> diagnostics)
-	{
-		IDBAttribute attribute = EnsureAttribute(session, obj, attributeGuid, attributeName, value, diagnostics);
-		if (attribute == null)
-		{
-			problems.Add("атрибут «" + attributeName + "» отсутствует у предприятия, и добавить его не удалось");
-			return false;
+			return;
 		}
 
-		try
-		{
-			attribute.Value = value;
-		}
-		catch (Exception ex)
-		{
-			problems.Add("не удалось записать «" + attributeName + "»: " + ex.Message);
-			return false;
-		}
-
-		// Проверка: значение действительно оказалось в атрибуте
-		try
-		{
-			IDBAttribute saved = obj.GetAttributeByGuid(attributeGuid);
-			if (saved == null || saved.Value == null)
-			{
-				problems.Add("значение «" + attributeName + "» не сохранилось");
-				return false;
-			}
-		}
-		catch
-		{
-			// значение недоступно для чтения — считаем запись выполненной
-		}
-
-		return true;
-	}
-
-	// Обработчик атрибута объекта.
-	//
-	// Атрибуты «Дата последнего/следующего контакта» имеют признак «Атрибут
-	// может быть добавлен вручную»: пока значение не заполнено, объекту они
-	// не присвоены и GetAttributeByGuid возвращает null (раньше запись в этом
-	// случае молча пропускалась). Здесь атрибут сначала добавляется объекту.
-	// Метод добавления в разных версиях API называется по-разному, поэтому
-	// подходящий подбирается по сигнатуре; перебранные варианты складываются
-	// в diagnostics и попадают в сообщение, если ни один не сработал.
-	private IDBAttribute EnsureAttribute(IUserSession session, IDBObject obj, Guid attributeGuid,
-		string attributeName, object value, List<string> diagnostics)
-	{
-		IDBAttribute attribute = obj.GetAttributeByGuid(attributeGuid);
-		if (attribute != null)
-			return attribute;
-
-		int attributeID = -1;
-		try
-		{
-			attributeID = MetaDataHelper.GetAttributeTypeID(attributeGuid.ToString());
-		}
-		catch
-		{
-			// идентификатор атрибута определить не удалось — пробуем по GUID и имени
-		}
-
-		// 1) перегрузки чтения атрибута с признаком «создать, если нет»
-		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
-			new string[] { "GetAttribute" }, diagnostics);
-		if (attribute != null)
-			return attribute;
-
-		// 2) методы добавления у коллекции атрибутов объекта
-		attribute = TryCalls(obj, obj.Attributes, attributeGuid, attributeID, attributeName, value,
-			new string[] { "Add", "Create", "Insert", "New" }, diagnostics);
-		if (attribute != null)
-			return attribute;
-
-		// 3) методы добавления у самого объекта
-		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
-			new string[] { "AddAttribute", "CreateAttribute", "AddObjectAttribute" }, diagnostics);
-		if (attribute != null)
-			return attribute;
-
-		// 4) методы добавления у пользовательской сессии
-		return TryCalls(obj, session, attributeGuid, attributeID, attributeName, value,
-			new string[] { "AddObjectAttribute", "SetObjectAttributeValue", "SetObjectAttributesValues" },
-			diagnostics);
-	}
-
-	// Перебор методов заданного объекта: аргументы подбираются по типам
-	// параметров, после каждого вызова проверяется, появился ли атрибут.
-	private IDBAttribute TryCalls(IDBObject obj, object target, Guid attributeGuid, int attributeID,
-		string attributeName, object value, string[] methodNames, List<string> diagnostics)
-	{
-		if (target == null)
-			return null;
-
-		foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
-		{
-			if (!NameStartsWithAny(method.Name, methodNames))
-				continue;
-
-			ParameterInfo[] methodParameters = method.GetParameters();
-			object[] arguments = new object[methodParameters.Length];
-			bool suitable = true;
-
-			for (int i = 0; i < methodParameters.Length; i++)
-			{
-				Type parameterType = methodParameters[i].ParameterType;
-
-				if (parameterType == typeof(int))
-					arguments[i] = attributeID;
-				else if (parameterType == typeof(long))
-					arguments[i] = obj.ObjectID;
-				else if (parameterType == typeof(Guid))
-					arguments[i] = attributeGuid;
-				else if (parameterType == typeof(string))
-					arguments[i] = attributeName;
-				else if (parameterType == typeof(bool))
-					arguments[i] = true;
-				else if (parameterType == typeof(object) || parameterType == typeof(DateTime))
-					arguments[i] = value;
-				else
-				{
-					suitable = false; // тип параметра подобрать нельзя — метод пропускаем
-					break;
-				}
-			}
-
-			if (!suitable)
-				continue;
-
-			// пропускаем заведомо бесполезный вариант: чтение атрибута без признака создания
-			if (methodParameters.Length == 1 && method.Name.StartsWith("GetAttribute", StringComparison.Ordinal))
-				continue;
-
-			diagnostics.Add(target.GetType().Name + "." + method.Name + "(" + DescribeParameters(methodParameters) + ")");
-
-			object result;
-			try
-			{
-				result = method.Invoke(target, arguments);
-			}
-			catch
-			{
-				continue; // сигнатура не подошла — пробуем следующий метод
-			}
-
-			IDBAttribute returned = result as IDBAttribute;
-			if (returned != null)
-				return returned;
-
-			IDBAttribute found = obj.GetAttributeByGuid(attributeGuid);
-			if (found != null)
-				return found;
-		}
-
-		return null;
-	}
-
-	private bool NameStartsWithAny(string methodName, string[] prefixes)
-	{
-		foreach (string prefix in prefixes)
-		{
-			if (methodName.StartsWith(prefix, StringComparison.Ordinal))
-				return true;
-		}
-
-		return false;
-	}
-
-	private string DescribeParameters(ParameterInfo[] methodParameters)
-	{
-		StringBuilder text = new StringBuilder();
-
-		foreach (ParameterInfo parameter in methodParameters)
-		{
-			if (text.Length > 0)
-				text.Append(", ");
-
-			text.Append(parameter.ParameterType.Name);
-		}
-
-		return text.ToString();
+		// Сообщение показывается после закрытия сессии, чтобы не держать её
+		// открытой на время диалога.
+		ShowResult(lastSaved, nextSaved, lastContact, nextContact, taskLine, context.Problems, diagnostics);
 	}
 
 	// =======================================================================
