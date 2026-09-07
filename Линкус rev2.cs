@@ -21,9 +21,11 @@ using Intermech.Kernel.Search;
 //
 // Скрипт вызывается с карточки контакта и:
 //   1) копирует телефон в буфер обмена и эмулирует Ctrl+Shift+E (звонок);
-//   2) спрашивает дату следующего контакта и комментарий;
-//   3) у родительского объекта (предприятия) обновляет «Дату последнего
-//      контакта» и «Дату следующего контакта»;
+//   2) показывает немодальное окно результата: дата следующего контакта
+//      и комментарий. Окно не блокирует IPS — его можно свернуть,
+//      поработать в системе и вернуться к записи позже;
+//   3) по «ОК» у родительского объекта (предприятия) обновляет «Дату
+//      последнего контакта» и «Дату следующего контакта»;
 //   4) пишет результат разговора в обсуждение предприятия.
 //
 // Важное отличие от прежней версии: если атрибут даты у предприятия ещё
@@ -61,12 +63,18 @@ public class Script
 		public DateTime SelectedDate { get; set; }
 	}
 
+	// Данные, нужные для записи результата после закрытия окна
+	private class CallContext
+	{
+		public IUserSession Session;
+		public int ParentId;
+		public string ContactGuid;
+		public string ContactTitle;
+		public List<string> Problems;
+	}
+
 	public AttributeValidationScriptParameters Execute(AttributeValidationScriptParameters parameters)
 	{
-		// Замечания, не мешающие выполнить звонок: показываются одним сообщением в конце
-		List<string> problems = new List<string>();
-		string savedClipboard = null;
-
 		try
 		{
 			IUserSession session = parameters.UserSession;
@@ -88,37 +96,22 @@ public class Script
 				return parameters;
 			}
 
-			string contactGuidStr = contact.ObjectGUID.ToString();
 			string contactTitle = GetAttributeText(contact, AttrDesignationGuid);
 			if (string.IsNullOrEmpty(contactTitle))
 				contactTitle = contact.Caption ?? "Без названия";
 
+			// Замечания, не мешающие выполнить звонок: показываются в итоговом сообщении
+			List<string> problems = new List<string>();
+
 			// ==================================================
 			// 2. ЗВОНОК (Linkus вызывается сочетанием Ctrl+Shift+E)
 			// ==================================================
-			savedClipboard = ReadClipboard();
-
-			try
-			{
-				Clipboard.SetText(phoneValue);
-				Thread.Sleep(ClipboardDelayMs);
-				PressCtrlShiftE();
-				Thread.Sleep(CallDelayMs);
-			}
-			catch (Exception ex)
-			{
-				problems.Add("телефония: " + ex.Message);
-			}
+			MakeCall(phoneValue, problems);
 
 			// ==================================================
-			// 3. РЕЗУЛЬТАТ РАЗГОВОРА
-			// ==================================================
-			InputResult dialogResult = ShowCallResultDialog();
-			if (dialogResult == null)
-				return parameters; // пользователь отменил ввод
-
-			// ==================================================
-			// 4. ОБНОВЛЕНИЕ ДАТ У ПРЕДПРИЯТИЯ
+			// 3. ПРЕДПРИЯТИЕ
+			// Ищется до показа окна результата, чтобы о проблемах было известно
+			// сразу, а не после ввода комментария.
 			// ==================================================
 			ICompositionLoadService compositionLoadService =
 				session.GetCustomService(typeof(ICompositionLoadService)) as ICompositionLoadService;
@@ -137,60 +130,103 @@ public class Script
 				return parameters;
 			}
 
-			int parentId = parentIds[0];
-			IDBObject parentObj = session.GetObject(parentId);
-			if (parentObj == null)
-			{
-				Show("Не удалось получить предприятие (идентификатор " + parentId + ").", MessageBoxIcon.Error);
-				return parameters;
-			}
-
-			DateTime lastContact = DateTime.Now;
-			DateTime nextContact = dialogResult.SelectedDate.Date;
-
-			// Перебранные способы добавления атрибута: попадают в сообщение,
-			// если добавить атрибут так и не удалось.
-			List<string> diagnostics = new List<string>();
-
-			bool lastSaved = SetDateValue(session, parentObj, AttrLastContactGuid, AttrLastContactName,
-				lastContact, problems, diagnostics);
-			bool nextSaved = SetDateValue(session, parentObj, AttrNextContactGuid, AttrNextContactName,
-				nextContact, problems, diagnostics);
-
 			// ==================================================
-			// 5. ЗАПИСЬ В ОБСУЖДЕНИЕ ПРЕДПРИЯТИЯ
+			// 4. ОКНО РЕЗУЛЬТАТА ЗВОНКА
+			// Окно немодальное: IPS остаётся доступным, окно можно свернуть,
+			// поработать в системе и вернуться к нему позже. Даты и запись
+			// в обсуждение выполняются по нажатию «ОК» — уже после того,
+			// как скрипт завершится (CompleteCall).
 			// ==================================================
-			try
-			{
-				StringBuilder text = new StringBuilder();
-				text.Append("Результат общения с [ref=\"" + contactGuidStr + "\"]" + contactTitle + "[/ref]: ");
-				text.Append(Environment.NewLine);
-				text.Append(dialogResult.Comment == null ? string.Empty : dialogResult.Comment.Trim());
+			CallContext context = new CallContext();
+			context.Session = session;
+			context.ParentId = parentIds[0];
+			context.ContactGuid = contact.ObjectGUID.ToString();
+			context.ContactTitle = contactTitle;
+			context.Problems = problems;
 
-				SendMessage(session, parentId, ForumTopic, text.ToString());
-			}
-			catch (Exception forumEx)
-			{
-				problems.Add("запись в обсуждение: " + forumEx.Message);
-			}
-
-			ShowResult(lastSaved, nextSaved, lastContact, nextContact, problems, diagnostics);
+			ShowCallResultDialog(context);
 		}
 		catch (Exception ex)
 		{
 			Show("Ошибка: " + ex.Message, MessageBoxIcon.Error);
 		}
+
+		return parameters;
+	}
+
+	// Звонок: номер кладётся в буфер обмена, Linkus вызывается сочетанием
+	// клавиш, после чего в буфер возвращается прежнее содержимое.
+	private void MakeCall(string phoneValue, List<string> problems)
+	{
+		string savedClipboard = ReadClipboard();
+
+		try
+		{
+			Clipboard.SetText(phoneValue);
+			Thread.Sleep(ClipboardDelayMs);
+			PressCtrlShiftE();
+			Thread.Sleep(CallDelayMs);
+		}
+		catch (Exception ex)
+		{
+			problems.Add("телефония: " + ex.Message);
+		}
 		finally
 		{
-			// Возвращаем в буфер обмена то, что там было до звонка
 			if (savedClipboard != null)
 			{
 				try { Clipboard.SetText(savedClipboard); }
 				catch { }
 			}
 		}
+	}
 
-		return parameters;
+	// Запись результата звонка: даты у предприятия и сообщение в обсуждение.
+	// Вызывается из окна результата, поэтому предприятие читается заново —
+	// между звонком и вводом комментария пользователь мог работать в IPS.
+	private void CompleteCall(CallContext context, InputResult result)
+	{
+		try
+		{
+			IDBObject parentObj = context.Session.GetObject(context.ParentId);
+			if (parentObj == null)
+			{
+				Show("Не удалось получить предприятие (идентификатор " + context.ParentId + ").", MessageBoxIcon.Error);
+				return;
+			}
+
+			DateTime lastContact = DateTime.Now;
+			DateTime nextContact = result.SelectedDate.Date;
+
+			// Перебранные способы добавления атрибута: попадают в сообщение,
+			// если добавить атрибут так и не удалось.
+			List<string> diagnostics = new List<string>();
+
+			bool lastSaved = SetDateValue(context.Session, parentObj, AttrLastContactGuid, AttrLastContactName,
+				lastContact, context.Problems, diagnostics);
+			bool nextSaved = SetDateValue(context.Session, parentObj, AttrNextContactGuid, AttrNextContactName,
+				nextContact, context.Problems, diagnostics);
+
+			try
+			{
+				StringBuilder text = new StringBuilder();
+				text.Append("Результат общения с [ref=\"" + context.ContactGuid + "\"]" + context.ContactTitle + "[/ref]: ");
+				text.Append(Environment.NewLine);
+				text.Append(result.Comment == null ? string.Empty : result.Comment.Trim());
+
+				SendMessage(context.Session, context.ParentId, ForumTopic, text.ToString());
+			}
+			catch (Exception forumEx)
+			{
+				context.Problems.Add("запись в обсуждение: " + forumEx.Message);
+			}
+
+			ShowResult(lastSaved, nextSaved, lastContact, nextContact, context.Problems, diagnostics);
+		}
+		catch (Exception ex)
+		{
+			Show("Ошибка при записи результата звонка: " + ex.Message, MessageBoxIcon.Error);
+		}
 	}
 
 	// =======================================================================
@@ -540,69 +576,95 @@ public class Script
 	// ДИАЛОГ РЕЗУЛЬТАТА ЗВОНКА
 	// =======================================================================
 
-	private InputResult ShowCallResultDialog()
+	// Немодальное окно результата звонка: пока оно открыто, с IPS можно
+	// работать, окно сворачивается и доступно с панели задач. По «ОК»
+	// (или «Не дозвонился») вызывается CompleteCall — запись дат и сообщения
+	// в обсуждение; по «Отмена» ничего не записывается.
+	private void ShowCallResultDialog(CallContext context)
 	{
-		using (Form form = new Form())
+		Form form = new Form();
+		Label labelDate = new Label();
+		DateTimePicker datePicker = new DateTimePicker();
+		Label labelComment = new Label();
+		TextBox textBox = new TextBox();
+		Button buttonNoAnswer = new Button();
+		Button buttonOk = new Button();
+		Button buttonCancel = new Button();
+
+		form.Text = "Результат звонка — " + context.ContactTitle;
+		form.ClientSize = new Size(400, 270);
+		form.MinimumSize = new Size(360, 260);
+		form.FormBorderStyle = FormBorderStyle.Sizable;
+		form.StartPosition = FormStartPosition.CenterScreen;
+		form.MinimizeBox = true;    // окно можно свернуть и вернуться к нему позже
+		form.MaximizeBox = false;
+		form.ShowInTaskbar = true;  // и найти его на панели задач
+
+		labelDate.Text = "Дата следующего контакта:";
+		labelDate.SetBounds(12, 12, 200, 15);
+
+		datePicker.SetBounds(12, 30, 200, 20);
+		datePicker.Format = DateTimePickerFormat.Short;
+
+		labelComment.Text = "Комментарий:";
+		labelComment.SetBounds(12, 60, 200, 15);
+
+		textBox.SetBounds(12, 78, 376, 140);
+		textBox.Multiline = true;
+		textBox.ScrollBars = ScrollBars.Vertical;
+		textBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
+
+		buttonNoAnswer.Text = NoAnswerText;
+		buttonNoAnswer.SetBounds(12, 230, 110, 25);
+		buttonNoAnswer.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+
+		buttonOk.Text = "ОК";
+		buttonOk.SetBounds(228, 230, 75, 25);
+		buttonOk.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+
+		buttonCancel.Text = "Отмена";
+		buttonCancel.SetBounds(313, 230, 75, 25);
+		buttonCancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
+
+		// Окно закрывается раньше записи результата, чтобы итоговое сообщение
+		// не перекрывалось им.
+		buttonOk.Click += delegate
 		{
-			Label labelDate = new Label();
-			DateTimePicker datePicker = new DateTimePicker();
-			Label labelComment = new Label();
-			TextBox textBox = new TextBox();
-			Button buttonNoAnswer = new Button();
-			Button buttonOk = new Button();
-			Button buttonCancel = new Button();
+			InputResult result = new InputResult();
+			result.Comment = textBox.Text;
+			result.SelectedDate = datePicker.Value;
 
-			form.Text = "Результат звонка";
-			form.ClientSize = new Size(400, 270);
-			form.FormBorderStyle = FormBorderStyle.FixedDialog;
-			form.StartPosition = FormStartPosition.CenterScreen;
-			form.MaximizeBox = false;
-			form.MinimizeBox = false;
+			form.Close();
+			CompleteCall(context, result);
+		};
 
-			labelDate.Text = "Дата следующего контакта:";
-			labelDate.SetBounds(12, 12, 200, 15);
+		buttonNoAnswer.Click += delegate
+		{
+			InputResult result = new InputResult();
+			result.Comment = NoAnswerText;
+			result.SelectedDate = datePicker.Value;
 
-			datePicker.SetBounds(12, 30, 200, 20);
-			datePicker.Format = DateTimePickerFormat.Short;
+			form.Close();
+			CompleteCall(context, result);
+		};
 
-			labelComment.Text = "Комментарий:";
-			labelComment.SetBounds(12, 60, 200, 15);
+		buttonCancel.Click += delegate
+		{
+			form.Close();
+		};
 
-			textBox.SetBounds(12, 78, 376, 140);
-			textBox.Multiline = true;
-			textBox.ScrollBars = ScrollBars.Vertical;
+		form.FormClosed += delegate
+		{
+			form.Dispose();
+		};
 
-			buttonNoAnswer.Text = NoAnswerText;
-			buttonNoAnswer.SetBounds(12, 230, 110, 25);
-			buttonNoAnswer.Click += delegate
-			{
-				textBox.Text = NoAnswerText;
-				form.DialogResult = DialogResult.OK;
-			};
+		form.Controls.AddRange(new Control[]
+			{ labelDate, datePicker, labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
 
-			buttonOk.Text = "ОК";
-			buttonOk.DialogResult = DialogResult.OK;
-			buttonOk.SetBounds(228, 230, 75, 25);
+		form.AcceptButton = buttonOk;
+		form.CancelButton = buttonCancel;
 
-			buttonCancel.Text = "Отмена";
-			buttonCancel.DialogResult = DialogResult.Cancel;
-			buttonCancel.SetBounds(313, 230, 75, 25);
-
-			form.Controls.AddRange(new Control[]
-				{ labelDate, datePicker, labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
-
-			form.AcceptButton = buttonOk;
-			form.CancelButton = buttonCancel;
-
-			if (form.ShowDialog() != DialogResult.OK)
-				return null;
-
-			return new InputResult
-			{
-				Comment = textBox.Text,
-				SelectedDate = datePicker.Value
-			};
-		}
+		form.Show();
 	}
 
 	// =======================================================================
