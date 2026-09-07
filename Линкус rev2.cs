@@ -26,10 +26,7 @@ using Intermech.Kernel.Search;
 //      поработать в системе и вернуться к записи позже;
 //   3) по «ОК» у родительского объекта (предприятия) обновляет «Дату
 //      последнего контакта» и «Дату следующего контакта»;
-//   4) пишет результат разговора в обсуждение предприятия;
-//   5) если отмечена галочка «Поставить задачу органайзера», ставит задачу
-//      на дату следующего контакта — то же, что кнопка на карточке
-//      предприятия (CreateOrganizerTask).
+//   4) пишет результат разговора в обсуждение предприятия.
 //
 // Важное отличие от прежней версии: если атрибут даты у предприятия ещё
 // ни разу не заполнялся, IPS не возвращает его обработчик, и запись молча
@@ -47,29 +44,8 @@ public class Script
 	private readonly Guid AttrNextContactGuid = new Guid("50676414-494a-498d-bae1-4e1af2b7e172");  // Дата следующего контакта
 	private readonly Guid RelationSimpleGuid = new Guid("cad00023-306c-11d8-b4e9-00304f19f545");   // Простая связь между объектами
 
-	private readonly Guid AttrNameGuid = new Guid("cad00020-306c-11d8-b4e9-00304f19f545");         // Наименование
-
 	private const string AttrLastContactName = "Дата последнего контакта";
 	private const string AttrNextContactName = "Дата следующего контакта";
-
-	// --- задача органайзера (та же логика, что у кнопки на карточке предприятия) ---
-	private const string TaskTypeName = "Задачи органайзера";
-	private const string TaskResourceRelationName = "Связь задачи органайзера с ресурсами";
-
-	private const string AttrCaptionName = "Наименование";
-	private const string AttrTaskStartName = "Начато";
-	private const string AttrTaskDeadlineName = "Срок выполнения";
-	private const string AttrTaskTextName = "Текст задачи органайзера";
-	private const string AttrReminderName = "Напоминание о задаче органайзера";
-	private const string AttrRemindBeforeName = "Напомнить за (интервал)";
-	private const string AttrShowPopupName = "Показывать напоминание во всплывающем окне";
-
-	private const string RemindBeforeText = "за 15 мин.";
-	private const string ObjectLinkPrefix = "ips://object/";
-
-	private const int TaskStartHour = 9;          // задача ставится на 09:00 даты контакта
-	private const int TaskDurationMinutes = 10;   // срок выполнения = начало + 10 минут
-	private const int MaxRelationTypeID = 10000;  // верхняя граница перебора типов связей
 
 	// --- тексты ---
 	private const string DialogCaption = "Звонок";
@@ -85,12 +61,12 @@ public class Script
 	{
 		public string Comment { get; set; }
 		public DateTime SelectedDate { get; set; }
-		public bool CreateTask { get; set; }
 	}
 
 	// Данные, нужные для записи результата после закрытия окна
 	private class CallContext
 	{
+		public IUserSession Session;
 		public int ParentId;
 		public string ContactGuid;
 		public string ContactTitle;
@@ -162,6 +138,7 @@ public class Script
 			// как скрипт завершится (CompleteCall).
 			// ==================================================
 			CallContext context = new CallContext();
+			context.Session = session;
 			context.ParentId = parentIds[0];
 			context.ContactGuid = contact.ObjectGUID.ToString();
 			context.ContactTitle = contactTitle;
@@ -209,356 +186,246 @@ public class Script
 	// между звонком и вводом комментария пользователь мог работать в IPS.
 	private void CompleteCall(CallContext context, InputResult result)
 	{
-		bool lastSaved = false;
-		bool nextSaved = false;
-		string taskLine = null;
-
-		DateTime lastContact = DateTime.Now;
-		DateTime nextContact = result.SelectedDate.Date;
-
-		// Перебранные способы добавления атрибута: попадают в сообщение,
-		// если добавить атрибут так и не удалось.
-		List<string> diagnostics = new List<string>();
-
 		try
 		{
-			// Скрипт к этому моменту уже завершился, а объекты сервера приложений
-			// вне SessionKeeper использовать нельзя — поэтому сессия берётся заново.
-			using (SessionKeeper keeper = new SessionKeeper())
+			IDBObject parentObj = context.Session.GetObject(context.ParentId);
+			if (parentObj == null)
 			{
-				IUserSession session = keeper.Session;
-
-				IDBObject parentObj = session.GetObject(context.ParentId);
-				if (parentObj == null)
-				{
-					Show("Не удалось получить предприятие (идентификатор " + context.ParentId + ").",
-						MessageBoxIcon.Error);
-					return;
-				}
-
-				lastSaved = SetDateValue(session, parentObj, AttrLastContactGuid, AttrLastContactName,
-					lastContact, context.Problems, diagnostics);
-				nextSaved = SetDateValue(session, parentObj, AttrNextContactGuid, AttrNextContactName,
-					nextContact, context.Problems, diagnostics);
-
-				// Запись в обсуждение предприятия
-				try
-				{
-					StringBuilder text = new StringBuilder();
-					text.Append("Результат общения с [ref=\"" + context.ContactGuid + "\"]" + context.ContactTitle + "[/ref]: ");
-					text.Append(Environment.NewLine);
-					text.Append(result.Comment == null ? string.Empty : result.Comment.Trim());
-
-					SendMessage(session, context.ParentId, ForumTopic, text.ToString());
-				}
-				catch (Exception forumEx)
-				{
-					context.Problems.Add("запись в обсуждение: " + forumEx.Message);
-				}
-
-				// Постановка задачи органайзера — если отмечена галочка в окне
-				if (result.CreateTask)
-					taskLine = CreateOrganizerTask(session, parentObj, nextContact, context.Problems);
+				Show("Не удалось получить предприятие (идентификатор " + context.ParentId + ").", MessageBoxIcon.Error);
+				return;
 			}
+
+			DateTime lastContact = DateTime.Now;
+			DateTime nextContact = result.SelectedDate.Date;
+
+			// Перебранные способы добавления атрибута: попадают в сообщение,
+			// если добавить атрибут так и не удалось.
+			List<string> diagnostics = new List<string>();
+
+			bool lastSaved = SetDateValue(context.Session, parentObj, AttrLastContactGuid, AttrLastContactName,
+				lastContact, context.Problems, diagnostics);
+			bool nextSaved = SetDateValue(context.Session, parentObj, AttrNextContactGuid, AttrNextContactName,
+				nextContact, context.Problems, diagnostics);
+
+			try
+			{
+				StringBuilder text = new StringBuilder();
+				text.Append("Результат общения с [ref=\"" + context.ContactGuid + "\"]" + context.ContactTitle + "[/ref]: ");
+				text.Append(Environment.NewLine);
+				text.Append(result.Comment == null ? string.Empty : result.Comment.Trim());
+
+				SendMessage(context.Session, context.ParentId, ForumTopic, text.ToString());
+			}
+			catch (Exception forumEx)
+			{
+				context.Problems.Add("запись в обсуждение: " + forumEx.Message);
+			}
+
+			ShowResult(lastSaved, nextSaved, lastContact, nextContact, context.Problems, diagnostics);
 		}
 		catch (Exception ex)
 		{
 			Show("Ошибка при записи результата звонка: " + ex.Message, MessageBoxIcon.Error);
-			return;
 		}
-
-		// Сообщение показывается после закрытия сессии, чтобы не держать её
-		// открытой на время диалога.
-		ShowResult(lastSaved, nextSaved, lastContact, nextContact, taskLine, context.Problems, diagnostics);
 	}
 
 	// =======================================================================
-	// ЗАДАЧА ОРГАНАЙЗЕРА
+	// АТРИБУТЫ
 	// =======================================================================
 
-	// Постановка задачи органайзера на дату следующего контакта — то же, что
-	// делает кнопка на карточке предприятия. Возвращает строку для итогового
-	// сообщения или null, если задача не создана.
-	private string CreateOrganizerTask(IUserSession session, IDBObject enterprise, DateTime nextContact,
-		List<string> problems)
+	private string GetAttributeText(IDBObject obj, Guid attributeGuid)
 	{
+		IDBAttribute attribute = obj.GetAttributeByGuid(attributeGuid);
+		return (attribute == null || attribute.Value == null)
+			? string.Empty
+			: attribute.Value.ToString().Trim();
+	}
+
+	// Запись даты с проверкой результата: значение перечитывается, поэтому
+	// «тихих» пропусков записи больше не будет.
+	private bool SetDateValue(IUserSession session, IDBObject obj, Guid attributeGuid,
+		string attributeName, DateTime value, List<string> problems, List<string> diagnostics)
+	{
+		IDBAttribute attribute = EnsureAttribute(session, obj, attributeGuid, attributeName, value, diagnostics);
+		if (attribute == null)
+		{
+			problems.Add("атрибут «" + attributeName + "» отсутствует у предприятия, и добавить его не удалось");
+			return false;
+		}
+
 		try
 		{
-			int taskTypeID = MetaDataHelper.GetObjectTypeIDFromName(TaskTypeName);
-			IDBObjectCollection taskCollection = session.GetObjectCollection(taskTypeID);
-
-			IDBObject task = taskCollection.Create();
-			if (task == null)
-			{
-				problems.Add("не удалось создать объект типа «" + TaskTypeName + "»");
-				return null;
-			}
-
-			DateTime taskStart = nextContact.Date.AddHours(TaskStartHour);
-			DateTime taskDeadline = taskStart.AddMinutes(TaskDurationMinutes);
-
-			string enterpriseName = GetAttributeText(enterprise, AttrNameGuid);
-			if (string.IsNullOrEmpty(enterpriseName))
-				enterpriseName = enterprise.Caption ?? string.Empty;
-
-			SetTaskValue(task, AttrTaskStartName, problems, taskStart);
-			SetTaskValue(task, AttrTaskDeadlineName, problems, taskDeadline);
-			SetTaskValue(task, AttrCaptionName, problems, "Связаться с " + enterpriseName);
-
-			// Текст задачи: наименование предприятия и ссылка на его карточку
-			SetTaskValue(task, AttrTaskTextName, problems,
-				"Связаться с " + enterpriseName + " " + ObjectLinkPrefix + enterprise.ObjectID);
-
-			if (task.IsCreationMode)
-				task.CommitCreation(true);
-
-			AddTaskResource(session, task, problems);
-
-			return "Задача органайзера: " + taskStart.ToString("dd.MM.yyyy HH:mm");
+			attribute.Value = value;
 		}
 		catch (Exception ex)
 		{
-			problems.Add("задача органайзера: " + ex.Message);
-			return null;
-		}
-	}
-
-	// Текущий пользователь IPS включается в состав задачи связью
-	// «Связь задачи органайзера с ресурсами» с атрибутами напоминания.
-	private void AddTaskResource(IUserSession session, IDBObject task, List<string> problems)
-	{
-		long currentUserID = GetCurrentUserObjectID(session);
-		if (currentUserID <= 0)
-		{
-			problems.Add("задача создана, но текущего пользователя определить не удалось — напоминание не назначено");
-			return;
+			problems.Add("не удалось записать «" + attributeName + "»: " + ex.Message);
+			return false;
 		}
 
-		int relationTypeID = ResolveRelationTypeIDByName(TaskResourceRelationName);
-		if (relationTypeID <= 0)
-		{
-			problems.Add("задача создана, но тип связи «" + TaskResourceRelationName + "» не найден");
-			return;
-		}
-
-		IDBRelationCollection relations = session.GetRelationCollection(relationTypeID);
-		IDBRelation relation = relations.Create(task.ObjectID, currentUserID);
-
-		if (relation == null)
-		{
-			problems.Add("задача создана, но связь с пользователем не создана");
-			return;
-		}
-
-		SetRelationValue(relation, AttrReminderName, problems, true, 1, "Да");
-		SetRelationValue(relation, AttrShowPopupName, problems, true, 1, "Да");
-
-		// «Напомнить за (интервал)» — строка из списка допустимых значений.
-		// IPS подставляет это же значение по умолчанию, а запись из скрипта
-		// отклоняет проверкой списка, поэтому замечания не собираем.
-		SetRelationValue(relation, AttrRemindBeforeName, null, RemindBeforeText);
-	}
-
-	// Идентификатор типа связи по наименованию: поиска по имени в MetaDataHelper
-	// нет, поэтому используется обратное преобразование GetRelationTypeName(id).
-	private int ResolveRelationTypeIDByName(string relationName)
-	{
-		for (int relationTypeID = 1; relationTypeID <= MaxRelationTypeID; relationTypeID++)
-		{
-			string name;
-			try
-			{
-				name = MetaDataHelper.GetRelationTypeName(relationTypeID);
-			}
-			catch
-			{
-				continue; // типа связи с таким идентификатором нет
-			}
-
-			if (!string.IsNullOrEmpty(name) &&
-				string.Compare(name.Trim(), relationName, StringComparison.CurrentCultureIgnoreCase) == 0)
-			{
-				return relationTypeID;
-			}
-		}
-
-		return -1;
-	}
-
-	// Присвоение значения атрибуту задачи по наименованию атрибута
-	private void SetTaskValue(IDBObject obj, string attributeName, List<string> problems, params object[] values)
-	{
-		AssignFirst(obj.Attributes.FindByName(attributeName), attributeName, problems, values);
-	}
-
-	// Присвоение значения атрибуту связи
-	private void SetRelationValue(IDBRelation relation, string attributeName, List<string> problems,
-		params object[] values)
-	{
-		AssignFirst(relation.Attributes.FindByName(attributeName), attributeName, problems, values);
-	}
-
-	// Записывает первое из значений, которое принимает тип атрибута.
-	// problems может быть null — тогда неудача не считается замечанием.
-	private void AssignFirst(IDBAttribute attribute, string attributeName, List<string> problems, object[] values)
-	{
-		if (attribute == null)
-		{
-			if (problems != null)
-				problems.Add("атрибут «" + attributeName + "» не найден");
-
-			return;
-		}
-
-		string currentValue = null;
+		// Проверка: значение действительно оказалось в атрибуте
 		try
 		{
-			if (attribute.Value != null)
-				currentValue = attribute.Value.ToString().Trim();
+			IDBAttribute saved = obj.GetAttributeByGuid(attributeGuid);
+			if (saved == null || saved.Value == null)
+			{
+				problems.Add("значение «" + attributeName + "» не сохранилось");
+				return false;
+			}
 		}
 		catch
 		{
-			// значение недоступно для чтения — считаем его неизвестным
+			// значение недоступно для чтения — считаем запись выполненной
 		}
 
-		foreach (object value in values)
-		{
-			if (value == null)
-				continue;
-
-			// нужное значение уже записано (например, значением по умолчанию)
-			if (currentValue != null &&
-				string.Compare(currentValue, value.ToString().Trim(), StringComparison.CurrentCultureIgnoreCase) == 0)
-			{
-				return;
-			}
-
-			try
-			{
-				attribute.Value = value;
-				return;
-			}
-			catch
-			{
-				// тип атрибута не принимает такое значение — пробуем следующее
-			}
-		}
-
-		if (problems != null)
-			problems.Add("не удалось записать значение в атрибут «" + attributeName + "»");
+		return true;
 	}
 
-	// =======================================================================
-	// ТЕКУЩИЙ ПОЛЬЗОВАТЕЛЬ
-	// =======================================================================
-
-	// Идентификатор объекта пользователя, под которым выполнен вход в IPS.
-	// Свойство с идентификатором в разных версиях API называется по-разному,
-	// поэтому источники перебираются по очереди.
-	private long GetCurrentUserObjectID(IUserSession session)
+	// Обработчик атрибута объекта.
+	//
+	// Атрибуты «Дата последнего/следующего контакта» имеют признак «Атрибут
+	// может быть добавлен вручную»: пока значение не заполнено, объекту они
+	// не присвоены и GetAttributeByGuid возвращает null (раньше запись в этом
+	// случае молча пропускалась). Здесь атрибут сначала добавляется объекту.
+	// Метод добавления в разных версиях API называется по-разному, поэтому
+	// подходящий подбирается по сигнатуре; перебранные варианты складываются
+	// в diagnostics и попадают в сообщение, если ни один не сработал.
+	private IDBAttribute EnsureAttribute(IUserSession session, IDBObject obj, Guid attributeGuid,
+		string attributeName, object value, List<string> diagnostics)
 	{
-		ICurrentUserAndRole currentUser =
-			ServicesManager.GetService(typeof(ICurrentUserAndRole)) as ICurrentUserAndRole;
+		IDBAttribute attribute = obj.GetAttributeByGuid(attributeGuid);
+		if (attribute != null)
+			return attribute;
 
-		long userID = ReadIdentifier(currentUser, "UserID", "UserId", "CurrentUserID", "ID");
-		if (userID > 0)
-			return userID;
-
-		userID = ReadIdentifier(session, "UserID", "UserId", "CurrentUserID");
-		if (userID > 0)
-			return userID;
-
-		if (currentUser != null)
-		{
-			IDBObject userObject = FindObjectByGuid(session, currentUser.UserGuid.ToString());
-			if (userObject != null)
-				return userObject.ObjectID;
-		}
-
-		return -1;
-	}
-
-	private long ReadIdentifier(object source, params string[] memberNames)
-	{
-		if (source == null)
-			return -1;
-
-		List<Type> types = new List<Type>();
-		types.Add(source.GetType());
-		types.AddRange(source.GetType().GetInterfaces());
-
-		BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy;
-
-		foreach (string memberName in memberNames)
-		{
-			foreach (Type type in types)
-			{
-				try
-				{
-					object value = null;
-
-					PropertyInfo property = type.GetProperty(memberName, flags);
-					if (property != null && property.CanRead)
-					{
-						value = property.GetValue(source, null);
-					}
-					else
-					{
-						FieldInfo field = type.GetField(memberName, flags);
-						if (field != null)
-							value = field.GetValue(source);
-					}
-
-					if (value == null)
-						continue;
-
-					long identifier = Convert.ToInt64(value);
-					if (identifier > 0)
-						return identifier;
-				}
-				catch
-				{
-					// свойство недоступно или значение не приводится к числу — идём дальше
-				}
-			}
-		}
-
-		return -1;
-	}
-
-	private IDBObject FindObjectByGuid(IUserSession session, string guidText)
-	{
-		Guid guid;
+		int attributeID = -1;
 		try
 		{
-			guid = new Guid(guidText);
+			attributeID = MetaDataHelper.GetAttributeTypeID(attributeGuid.ToString());
 		}
 		catch
 		{
-			return null;
+			// идентификатор атрибута определить не удалось — пробуем по GUID и имени
 		}
 
-		string[] methodNames = new string[] { "GetObjectByGUID", "GetObjectByGuid", "GetObject" };
+		// 1) перегрузки чтения атрибута с признаком «создать, если нет»
+		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
+			new string[] { "GetAttribute" }, diagnostics);
+		if (attribute != null)
+			return attribute;
 
-		foreach (string methodName in methodNames)
+		// 2) методы добавления у коллекции атрибутов объекта
+		attribute = TryCalls(obj, obj.Attributes, attributeGuid, attributeID, attributeName, value,
+			new string[] { "Add", "Create", "Insert", "New" }, diagnostics);
+		if (attribute != null)
+			return attribute;
+
+		// 3) методы добавления у самого объекта
+		attribute = TryCalls(obj, obj, attributeGuid, attributeID, attributeName, value,
+			new string[] { "AddAttribute", "CreateAttribute", "AddObjectAttribute" }, diagnostics);
+		if (attribute != null)
+			return attribute;
+
+		// 4) методы добавления у пользовательской сессии
+		return TryCalls(obj, session, attributeGuid, attributeID, attributeName, value,
+			new string[] { "AddObjectAttribute", "SetObjectAttributeValue", "SetObjectAttributesValues" },
+			diagnostics);
+	}
+
+	// Перебор методов заданного объекта: аргументы подбираются по типам
+	// параметров, после каждого вызова проверяется, появился ли атрибут.
+	private IDBAttribute TryCalls(IDBObject obj, object target, Guid attributeGuid, int attributeID,
+		string attributeName, object value, string[] methodNames, List<string> diagnostics)
+	{
+		if (target == null)
+			return null;
+
+		foreach (MethodInfo method in target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance))
 		{
-			MethodInfo method = session.GetType().GetMethod(methodName, new Type[] { typeof(Guid) });
-			if (method == null)
+			if (!NameStartsWithAny(method.Name, methodNames))
 				continue;
 
+			ParameterInfo[] methodParameters = method.GetParameters();
+			object[] arguments = new object[methodParameters.Length];
+			bool suitable = true;
+
+			for (int i = 0; i < methodParameters.Length; i++)
+			{
+				Type parameterType = methodParameters[i].ParameterType;
+
+				if (parameterType == typeof(int))
+					arguments[i] = attributeID;
+				else if (parameterType == typeof(long))
+					arguments[i] = obj.ObjectID;
+				else if (parameterType == typeof(Guid))
+					arguments[i] = attributeGuid;
+				else if (parameterType == typeof(string))
+					arguments[i] = attributeName;
+				else if (parameterType == typeof(bool))
+					arguments[i] = true;
+				else if (parameterType == typeof(object) || parameterType == typeof(DateTime))
+					arguments[i] = value;
+				else
+				{
+					suitable = false; // тип параметра подобрать нельзя — метод пропускаем
+					break;
+				}
+			}
+
+			if (!suitable)
+				continue;
+
+			// пропускаем заведомо бесполезный вариант: чтение атрибута без признака создания
+			if (methodParameters.Length == 1 && method.Name.StartsWith("GetAttribute", StringComparison.Ordinal))
+				continue;
+
+			diagnostics.Add(target.GetType().Name + "." + method.Name + "(" + DescribeParameters(methodParameters) + ")");
+
+			object result;
 			try
 			{
-				IDBObject found = method.Invoke(session, new object[] { guid }) as IDBObject;
-				if (found != null)
-					return found;
+				result = method.Invoke(target, arguments);
 			}
 			catch
 			{
-				// метод есть, но вызов не удался — пробуем следующий вариант
+				continue; // сигнатура не подошла — пробуем следующий метод
 			}
+
+			IDBAttribute returned = result as IDBAttribute;
+			if (returned != null)
+				return returned;
+
+			IDBAttribute found = obj.GetAttributeByGuid(attributeGuid);
+			if (found != null)
+				return found;
 		}
 
 		return null;
+	}
+
+	private bool NameStartsWithAny(string methodName, string[] prefixes)
+	{
+		foreach (string prefix in prefixes)
+		{
+			if (methodName.StartsWith(prefix, StringComparison.Ordinal))
+				return true;
+		}
+
+		return false;
+	}
+
+	private string DescribeParameters(ParameterInfo[] methodParameters)
+	{
+		StringBuilder text = new StringBuilder();
+
+		foreach (ParameterInfo parameter in methodParameters)
+		{
+			if (text.Length > 0)
+				text.Append(", ");
+
+			text.Append(parameter.ParameterType.Name);
+		}
+
+		return text.ToString();
 	}
 
 	// =======================================================================
@@ -718,7 +585,6 @@ public class Script
 		Form form = new Form();
 		Label labelDate = new Label();
 		DateTimePicker datePicker = new DateTimePicker();
-		CheckBox checkTask = new CheckBox();
 		Label labelComment = new Label();
 		TextBox textBox = new TextBox();
 		Button buttonNoAnswer = new Button();
@@ -737,14 +603,8 @@ public class Script
 		labelDate.Text = "Дата следующего контакта:";
 		labelDate.SetBounds(12, 12, 200, 15);
 
-		datePicker.SetBounds(12, 30, 130, 20);
+		datePicker.SetBounds(12, 30, 200, 20);
 		datePicker.Format = DateTimePickerFormat.Short;
-
-		// То же, что кнопка «Задача органайзера» на карточке предприятия:
-		// задача ставится на выбранную дату при нажатии «ОК».
-		checkTask.Text = "Поставить задачу органайзера";
-		checkTask.SetBounds(150, 31, 240, 20);
-		checkTask.Checked = true;
 
 		labelComment.Text = "Комментарий:";
 		labelComment.SetBounds(12, 60, 200, 15);
@@ -773,7 +633,6 @@ public class Script
 			InputResult result = new InputResult();
 			result.Comment = textBox.Text;
 			result.SelectedDate = datePicker.Value;
-			result.CreateTask = checkTask.Checked;
 
 			form.Close();
 			CompleteCall(context, result);
@@ -784,7 +643,6 @@ public class Script
 			InputResult result = new InputResult();
 			result.Comment = NoAnswerText;
 			result.SelectedDate = datePicker.Value;
-			result.CreateTask = checkTask.Checked;
 
 			form.Close();
 			CompleteCall(context, result);
@@ -801,7 +659,7 @@ public class Script
 		};
 
 		form.Controls.AddRange(new Control[]
-			{ labelDate, datePicker, checkTask, labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
+			{ labelDate, datePicker, labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
 
 		form.AcceptButton = buttonOk;
 		form.CancelButton = buttonCancel;
@@ -820,7 +678,7 @@ public class Script
 
 	// Итог: что записано в карточку предприятия и что не удалось.
 	private void ShowResult(bool lastSaved, bool nextSaved, DateTime lastContact, DateTime nextContact,
-		string taskLine, List<string> problems, List<string> diagnostics)
+		List<string> problems, List<string> diagnostics)
 	{
 		StringBuilder text = new StringBuilder();
 
@@ -833,14 +691,6 @@ public class Script
 				text.Append(Environment.NewLine);
 
 			text.Append("Дата следующего контакта: " + nextContact.ToString("dd.MM.yyyy"));
-		}
-
-		if (!string.IsNullOrEmpty(taskLine))
-		{
-			if (text.Length > 0)
-				text.Append(Environment.NewLine);
-
-			text.Append(taskLine);
 		}
 
 		if (text.Length == 0)
