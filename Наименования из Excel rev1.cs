@@ -109,7 +109,21 @@ public class Script
 				{
 					try
 					{
-						IDBObject obj = session.GetObject(row.ObjectID);
+						// Для несуществующего идентификатора IPS не возвращает null,
+						// а выбрасывает исключение, поэтому оба случая обрабатываются
+						// здесь и попадают в счётчик «не найдено».
+						IDBObject obj = null;
+						try
+						{
+							obj = session.GetObject(row.ObjectID);
+						}
+						catch (Exception getEx)
+						{
+							notFound++;
+							AddProblem(problems, "строка " + row.RowNumber + ": " + getEx.Message);
+							continue;
+						}
+
 						if (obj == null)
 						{
 							notFound++;
