@@ -27,9 +27,10 @@ using Intermech.Kernel.Search;
 //   3) по «ОК» у родительского объекта (предприятия) обновляет «Дату
 //      последнего контакта» и «Дату следующего контакта»;
 //   4) пишет результат разговора в обсуждение предприятия;
-//   5) если отмечена галочка «Поставить задачу органайзера», ставит задачу
-//      на дату следующего контакта — то же, что кнопка на карточке
-//      предприятия.
+//   5) если отмечена галочка «Поставить задачу органайзера» (по умолчанию
+//      выключена), ставит задачу на выбранные дату и время — то же, что
+//      кнопка на карточке предприятия. Время по умолчанию 09:00; от него
+//      IPS отсчитывает напоминание.
 //
 // Запись выполняется уже после завершения скрипта (окно немодальное),
 // поэтому вся работа с базой в CompleteCall идёт внутри SessionKeeper —
@@ -71,7 +72,7 @@ public class Script
 	private const string RemindBeforeText = "за 15 мин.";
 	private const string ObjectLinkPrefix = "ips://object/";
 
-	private const int TaskStartHour = 9;          // задача ставится на 09:00 даты контакта
+	private const int TaskStartHour = 9;          // время задачи в окне по умолчанию — 09:00
 	private const int TaskDurationMinutes = 10;   // срок выполнения = начало + 10 минут
 	private const int MaxRelationTypeID = 10000;  // верхняя граница перебора типов связей
 
@@ -89,6 +90,7 @@ public class Script
 	{
 		public string Comment { get; set; }
 		public DateTime SelectedDate { get; set; }
+		public DateTime SelectedTime { get; set; }   // время задачи органайзера
 		public bool CreateTask { get; set; }
 	}
 
@@ -262,9 +264,14 @@ public class Script
 					context.Problems.Add("запись в обсуждение: " + forumEx.Message);
 				}
 
-				// Задача органайзера — если отмечена галочка в окне результата
+				// Задача органайзера — если отмечена галочка в окне результата.
+				// Время берётся из окна (по умолчанию 09:00), от него же IPS
+				// отсчитывает напоминание.
 				if (result.CreateTask)
-					taskLine = CreateOrganizerTask(session, parentObj, nextContact, context.Problems);
+				{
+					DateTime taskStart = nextContact.Date.Add(result.SelectedTime.TimeOfDay);
+					taskLine = CreateOrganizerTask(session, parentObj, taskStart, context.Problems);
+				}
 			}
 		}
 		catch (Exception ex)
@@ -634,6 +641,8 @@ public class Script
 		Form form = new Form();
 		Label labelDate = new Label();
 		DateTimePicker datePicker = new DateTimePicker();
+		Label labelTime = new Label();
+		DateTimePicker timePicker = new DateTimePicker();
 		CheckBox checkTask = new CheckBox();
 		Label labelComment = new Label();
 		TextBox textBox = new TextBox();
@@ -651,21 +660,32 @@ public class Script
 		form.ShowInTaskbar = true;  // и найти его на панели задач
 
 		labelDate.Text = "Дата следующего контакта:";
-		labelDate.SetBounds(12, 12, 200, 15);
+		labelDate.SetBounds(12, 12, 160, 15);
 
-		datePicker.SetBounds(12, 30, 130, 20);
+		labelTime.Text = "Время звонка:";
+		labelTime.SetBounds(180, 12, 100, 15);
+
+		datePicker.SetBounds(12, 30, 160, 20);
 		datePicker.Format = DateTimePickerFormat.Short;
 
+		// Время задачи органайзера: по умолчанию 09:00, как было раньше.
+		// Если задать другое, задача встанет на него, и от него же IPS
+		// отсчитает напоминание.
+		timePicker.SetBounds(180, 30, 90, 20);
+		timePicker.Format = DateTimePickerFormat.Time;
+		timePicker.ShowUpDown = true;
+		timePicker.Value = DateTime.Today.AddHours(TaskStartHour);
+
 		// То же, что кнопка «Задача органайзера» на карточке предприятия:
-		// задача ставится на выбранную дату при нажатии «ОК».
+		// задача ставится на выбранные дату и время при нажатии «ОК».
 		checkTask.Text = "Поставить задачу органайзера";
-		checkTask.SetBounds(150, 31, 240, 20);
-		checkTask.Checked = true;
+		checkTask.SetBounds(12, 56, 260, 20);
+		checkTask.Checked = false;   // по умолчанию задача не создаётся
 
 		labelComment.Text = "Комментарий:";
-		labelComment.SetBounds(12, 60, 200, 15);
+		labelComment.SetBounds(12, 82, 200, 15);
 
-		textBox.SetBounds(12, 78, 376, 140);
+		textBox.SetBounds(12, 100, 376, 118);
 		textBox.Multiline = true;
 		textBox.ScrollBars = ScrollBars.Vertical;
 		textBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
@@ -689,6 +709,7 @@ public class Script
 			InputResult result = new InputResult();
 			result.Comment = textBox.Text;
 			result.SelectedDate = datePicker.Value;
+			result.SelectedTime = timePicker.Value;
 			result.CreateTask = checkTask.Checked;
 
 			form.Close();
@@ -700,6 +721,7 @@ public class Script
 			InputResult result = new InputResult();
 			result.Comment = NoAnswerText;
 			result.SelectedDate = datePicker.Value;
+			result.SelectedTime = timePicker.Value;
 			result.CreateTask = checkTask.Checked;
 
 			form.Close();
@@ -717,7 +739,8 @@ public class Script
 		};
 
 		form.Controls.AddRange(new Control[]
-			{ labelDate, datePicker, checkTask, labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
+			{ labelDate, datePicker, labelTime, timePicker, checkTask,
+			  labelComment, textBox, buttonNoAnswer, buttonOk, buttonCancel });
 
 		form.AcceptButton = buttonOk;
 		form.CancelButton = buttonCancel;
@@ -729,11 +752,12 @@ public class Script
 	// ЗАДАЧА ОРГАНАЙЗЕРА
 	// =======================================================================
 
-	// Постановка задачи органайзера на дату следующего контакта — то же, что
-	// делает кнопка на карточке предприятия. Вызывается внутри SessionKeeper,
-	// сессия передаётся аргументом. Возвращает строку для итогового сообщения
+	// Постановка задачи органайзера на дату и время следующего контакта — то же,
+	// что делает кнопка на карточке предприятия. Вызывается внутри SessionKeeper,
+	// сессия передаётся аргументом. taskStart — момент начала задачи, выбранный
+	// в окне результата звонка. Возвращает строку для итогового сообщения
 	// или null, если задача не создана.
-	private string CreateOrganizerTask(IUserSession session, IDBObject enterprise, DateTime nextContact,
+	private string CreateOrganizerTask(IUserSession session, IDBObject enterprise, DateTime taskStart,
 		List<string> problems)
 	{
 		try
@@ -748,7 +772,6 @@ public class Script
 				return null;
 			}
 
-			DateTime taskStart = nextContact.Date.AddHours(TaskStartHour);
 			DateTime taskDeadline = taskStart.AddMinutes(TaskDurationMinutes);
 
 			string enterpriseName = GetAttributeText(enterprise, AttrNameGuid);
