@@ -56,14 +56,14 @@ public class Script
 
 	// Запасные адреса поиска — на случай, если форму на главной странице
 	// распознать не удалось. Проверяются по очереди, {0} — ИНН.
-	private static readonly string[] KnownSearchUrls = new string[]
+	private readonly string[] KnownSearchUrls = new string[]
 	{
 		"https://www.rusprofile.ru/search-advanced?query={0}",
 		"https://www.rusprofile.ru/search?query={0}"
 	};
 
 	// Имена полей, в которые форма кладёт поисковый запрос
-	private static readonly string[] QueryFieldNames = new string[]
+	private readonly string[] QueryFieldNames = new string[]
 	{
 		"query", "q", "search", "search_query", "searchquery", "text", "inn", "name"
 	};
