@@ -91,38 +91,26 @@ describe('SolidWorks package container', () => {
     assert.ok(checked > 0, 'expected at least one file carrying both a model and a ghost partition');
   });
 
-  it('extracts geometry from part of the corpus, and reports the rest honestly', async (t) => {
+  it('finds the exact solid in nearly every part', async (t) => {
     if (available.length === 0) return t.skip('no files in samples/');
 
     let model = 0;
-    let stub = 0;
-    let none = 0;
-    let empty = 0;
+    let real = 0;
     for (const name of available) {
       const buffer = await load(name);
-      if (buffer.length < 1024) empty += 1;
-      else if (findModelPartition(buffer)) model += 1;
-      else if (findParasolidPartitions(buffer).length > 0) stub += 1;
-      else none += 1;
+      if (buffer.length < 1024) continue;
+      real += 1;
+      if (findModelPartition(buffer)) model += 1;
     }
-
-    const real = available.length - empty;
     const share = model / real;
-    console.log(
-      `      model ${model}/${real} (${(share * 100).toFixed(0)}%), stub only ${stub}, no Parasolid ${none}, empty ${empty}`,
-    );
+    console.log(`      Parasolid model in ${model}/${real} parts (${(share * 100).toFixed(0)}%)`);
 
-    // This floor replaces a higher one that was measuring the wrong thing. The
-    // old rule counted any Parasolid stream over 2 KB as geometry, which swept
-    // in ghost partitions of 2184-2856 bytes and reported 58% — the true figure
-    // under the corrected rule is 49%, and the reader did not get worse. A
-    // number that flatters the work is worse than no number.
-    //
-    // Raise this when the reader genuinely improves, never to make a run pass.
-    assert.ok(
-      share >= 0.45,
-      `a model was extracted from only ${model}/${real} parts, below the 45% baseline`,
-    );
+    // This used to read 49%, and before that 58%. Both were artefacts of
+    // scanning raw bytes for zlib streams: read as the ZIP archive it is, the
+    // package gives up its model partition in all but a handful of parts, and
+    // those few carry only the small stub. The display mesh — what is drawn —
+    // is checked separately and is there in every one.
+    assert.ok(share >= 0.9, `the model partition was found in only ${model}/${real} parts`);
   });
 
   it('accepts a payload only when it verifies against its own declared sizes', async (t) => {

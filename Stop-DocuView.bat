@@ -1,6 +1,5 @@
 @echo off
-rem Stops DocuView and the background SOLIDWORKS it started.
-rem A SOLIDWORKS you opened yourself is never closed.
+rem Stops DocuView if its window was closed or minimised and forgotten.
 setlocal
 cd /d "%~dp0"
 where node >nul 2>nul

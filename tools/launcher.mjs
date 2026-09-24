@@ -7,15 +7,16 @@
  *   node tools/launcher.mjs --no-browser start without opening a browser
  *
  * In order: dependencies (only when package-lock.json changed), a production
- * build (only when the sources changed), SOLIDWORKS (found, and its small COM
- * helper compiled, so every .SLDPRT opens as real 3D), then the API and the web
- * app in the background, and the browser once both actually answer.
+ * build (only when the sources changed), then the API and the web app in the
+ * background, and the browser once both actually answer.
+ *
+ * No CAD is needed on this machine or any other: SolidWorks parts are read
+ * straight from the file, in DocuView's own code.
  *
  * Written for Node rather than PowerShell on purpose: Windows blocks
  * PowerShell scripts by default, and working around that would mean weakening
- * a protection the user has switched on. Node is needed anyway.
- *
- * The same file runs on Linux and macOS; there it simply finds no SOLIDWORKS.
+ * a protection the user has switched on. Node is needed anyway. The same file
+ * runs on Linux and macOS.
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -28,9 +29,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const logs = path.join(root, 'logs');
 const stateFile = path.join(logs, 'running.json');
 const stampFile = path.join(root, '.build-stamp');
-const swDir = path.join(root, 'tools', 'solidworks');
-const swHelper = path.join(swDir, 'bin', 'sw-convert.exe');
-const swMarker = path.join(logs, 'solidworks-started-by-docuview.txt');
 const WEB_PORT = 3000;
 const API_PORT = 4000;
 const WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
@@ -38,11 +36,6 @@ const MIN_NODE = [20, 11];
 const isWindows = process.platform === 'win32';
 
 const args = new Set(process.argv.slice(2));
-const argValue = (name) => {
-  const all = process.argv.slice(2);
-  const at = all.indexOf(name);
-  return at >= 0 ? all[at + 1] : undefined;
-};
 
 fs.mkdirSync(logs, { recursive: true });
 
@@ -185,14 +178,9 @@ function readState() {
   }
 }
 
-function stopAll({ quitSolidWorks = true } = {}) {
+function stopAll() {
   const state = readState();
-  if (state) for (const pid of [state.api, state.web, state.keeper]) killTree(pid);
-  if (quitSolidWorks && isWindows && fs.existsSync(swHelper) && fs.existsSync(swMarker)) {
-    // Closes only a SOLIDWORKS this launcher started hidden — never one the
-    // user opened themselves.
-    spawnSync(swHelper, ['quit', swMarker], { stdio: 'ignore', windowsHide: true, timeout: 30000 });
-  }
+  if (state) for (const pid of [state.api, state.web]) killTree(pid);
   fs.rmSync(stateFile, { force: true });
 }
 
@@ -279,89 +267,6 @@ async function ensureBuild() {
   ok('Сборка актуальна');
 }
 
-/** The C# compiler that ships with Windows as part of .NET Framework 4.x. */
-function findCsc() {
-  const windir = process.env.WINDIR ?? process.env.SystemRoot ?? 'C:\\Windows';
-  for (const framework of ['Framework64', 'Framework']) {
-    const candidate = path.join(windir, 'Microsoft.NET', framework, 'v4.0.30319', 'csc.exe');
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
-function findSolidWorksExe() {
-  const candidates = [
-    'C:\\Program Files\\SOLIDWORKS Corp\\SOLIDWORKS (3)\\SLDWORKS.exe',
-    'C:\\Program Files\\SOLIDWORKS Corp\\SOLIDWORKS\\SLDWORKS.exe',
-  ];
-  for (let year = new Date().getFullYear() + 1; year >= 2018; year -= 1) {
-    const query = spawnSync('reg', ['query', `HKLM\\SOFTWARE\\SolidWorks\\SOLIDWORKS ${year}\\Setup`, '/v', 'SolidWorks Folder'], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
-    const folder = /SolidWorks Folder\s+REG_SZ\s+(.+)/i.exec(query.stdout ?? '')?.[1]?.trim();
-    if (folder) candidates.push(path.join(folder, 'SLDWORKS.exe'));
-  }
-  return candidates.find((file) => fs.existsSync(file)) ?? null;
-}
-
-/**
- * Returns the CAD_CONVERTER_CMD to use, or '' to run without SOLIDWORKS.
- * `--sw-helper <script>` substitutes a stand-in, for testing without SOLIDWORKS.
- */
-async function setupSolidWorks() {
-  const convert = path.join(swDir, 'convert.mjs');
-  const quote = (value) => `"${value}"`;
-  const testHelper = argValue('--sw-helper');
-  if (testHelper) {
-    warn(`Тестовый режим: вместо SOLIDWORKS — ${testHelper}`);
-    return `${quote(process.execPath)} ${quote(convert)} {input} {output} {informat} --helper ${quote(path.resolve(testHelper))}`;
-  }
-  if (args.has('--no-solidworks') || process.env.DOCUVIEW_NO_SOLIDWORKS === '1') {
-    warn('Отключён (--no-solidworks).');
-    return '';
-  }
-  if (!isWindows) {
-    warn('SOLIDWORKS бывает только на Windows — .SLDPRT откроются собственным чтением.');
-    return '';
-  }
-
-  const registered = spawnSync('reg', ['query', 'HKCR\\SldWorks.Application'], { stdio: 'ignore', windowsHide: true }).status === 0;
-  if (!registered) {
-    warn('SOLIDWORKS не найден. .SLDPRT откроются собственным чтением — у части файлов без 3D.');
-    return '';
-  }
-  const exe = findSolidWorksExe();
-  ok(exe ? `Найден: ${exe}` : 'Найден (зарегистрирован в системе)');
-
-  // Build the COM helper when it is missing or older than its source.
-  const source = path.join(swDir, 'SwConvert.cs');
-  const stale = !fs.existsSync(swHelper) || fs.statSync(swHelper).mtimeMs < fs.statSync(source).mtimeMs;
-  if (stale) {
-    const csc = findCsc();
-    if (!csc) {
-      warn('Не найден компилятор C# из .NET Framework 4 — без него SOLIDWORKS не подключить.');
-      warn('Включите «.NET Framework 4.8» в «Компоненты Windows» и запустите снова.');
-      return '';
-    }
-    fs.mkdirSync(path.dirname(swHelper), { recursive: true });
-    const build = spawnSync(
-      csc,
-      ['/nologo', '/target:exe', '/optimize+', '/r:Microsoft.CSharp.dll', '/r:System.Core.dll', `/out:${swHelper}`, source],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    fs.writeFileSync(path.join(logs, 'helper-build.log'), `${build.stdout ?? ''}${build.stderr ?? ''}`);
-    if (build.status !== 0 || !fs.existsSync(swHelper)) {
-      tail(path.join(logs, 'helper-build.log'));
-      warn('Не удалось собрать помощник SOLIDWORKS — продолжаю без него.');
-      return '';
-    }
-    ok('Помощник SOLIDWORKS собран');
-  }
-  say(dim('   Модели SOLIDWORKS будут открываться полной 3D-геометрией.'));
-  return `${quote(process.execPath)} ${quote(convert)} {input} {output} {informat}`;
-}
-
 async function freePorts() {
   const busy = async () => (await answers(`http://127.0.0.1:${API_PORT}/healthz`)) || (await answers(WEB_URL));
   if (!(await busy())) return;
@@ -369,7 +274,7 @@ async function freePorts() {
   const state = readState();
   if (state && (alive(state.api) || alive(state.web))) {
     warn('Остался прошлый запуск — останавливаю его.');
-    stopAll({ quitSolidWorks: false });
+    stopAll();
     await sleep(1500);
   }
   if (await busy()) {
@@ -381,7 +286,7 @@ async function freePorts() {
   }
 }
 
-async function startServers(converter) {
+async function startServers() {
   const env = {
     ...process.env,
     NODE_ENV: 'production',
@@ -392,12 +297,10 @@ async function startServers(converter) {
     MAX_UPLOAD_MB: '1024',
     // A local, single-user tool: keep documents for a week, not an hour.
     RETENTION_MINUTES: '10080',
-    // SOLIDWORKS needs time on big assemblies; the converter itself stops at 9 minutes.
     PROCESSING_TIMEOUT_SECONDS: '600',
     // Dropping a folder of parts at once is normal here. Still a limit.
     RATE_LIMIT_UPLOADS: '120',
     NEXT_TELEMETRY_DISABLED: '1',
-    CAD_CONVERTER_CMD: converter,
   };
 
   const tag = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
@@ -420,19 +323,9 @@ async function startServers(converter) {
     { cwd: path.join(root, 'apps', 'web'), env, stdio: ['ignore', fs.openSync(webLog, 'a'), fs.openSync(webLog, 'a')] },
   );
 
-  let keeper = null;
-  if (converter && isWindows && fs.existsSync(swHelper) && !argValue('--sw-helper')) {
-    // Warm SOLIDWORKS up now rather than on the first model: a cold start is
-    // 20-60 seconds. Detached, so it outlives this window and closes the
-    // SOLIDWORKS it started a minute after the API is gone.
-    keeper = spawn(swHelper, ['warmup', swMarker, String(API_PORT)], { detached: true, stdio: 'ignore', windowsHide: true });
-    keeper.on('error', () => {});
-    keeper.unref();
-  }
-
   fs.writeFileSync(
     stateFile,
-    JSON.stringify({ api: api.pid, web: web.pid, keeper: keeper?.pid ?? 0, started: new Date().toISOString() }, null, 2),
+    JSON.stringify({ api: api.pid, web: web.pid, started: new Date().toISOString() }, null, 2),
   );
 
   let exited = null;
@@ -494,10 +387,8 @@ async function main() {
   await ensureDependencies();
   step('Сборка');
   await ensureBuild();
-  step('SOLIDWORKS');
-  const converter = await setupSolidWorks();
   step('Запуск');
-  const { getExited } = await startServers(converter);
+  const { getExited } = await startServers();
 
   if (!args.has('--no-browser')) openBrowser();
 
@@ -505,8 +396,7 @@ async function main() {
   say(green('  ============================================='));
   say(green(`    DocuView работает:  ${WEB_URL}`));
   say(green('  ============================================='));
-  say('  Перетащите .SLDPRT, .SLDASM, STEP, PDF, DOCX... в окно браузера.');
-  if (converter && isWindows) say(dim('  SOLIDWORKS прогревается в фоне — первая модель может открываться до минуты.'));
+  say('  Перетащите .SLDPRT, STEP, PDF, DOCX... в окно браузера. CAD для этого не нужен.');
   say();
   say(bold('  O — открыть браузер ещё раз     S — остановить'));
   say(dim('  Окно можно свернуть. Закрыть окно — тоже остановить.'));
