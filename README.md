@@ -1,5 +1,10 @@
 # DocuView
 
+> **Windows + SOLIDWORKS:** double-click `Start-DocuView.bat` — see
+> [START-HERE.md](START-HERE.md) (in Russian) for the one-click setup, how the
+> installed SOLIDWORKS is used to open every `.SLDPRT` in 3D, and
+> `Check-All-Models.bat`, which proves it on a whole folder of models.
+
 A visual desktop for engineering documents. Drop a file anywhere and the right
 viewer opens with the tools that format actually supports — 3D navigation,
 sectioning and measurement for CAD, page rendering and search for PDF,

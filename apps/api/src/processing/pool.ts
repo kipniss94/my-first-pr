@@ -44,12 +44,7 @@ class Worker {
       stdio: ['pipe', 'pipe', 'pipe'],
       // A deliberately small environment: the processing layer never needs our
       // configuration or any secret the API process may hold.
-      env: {
-        PATH: process.env.PATH,
-        HOME: process.env.HOME,
-        NODE_ENV: process.env.NODE_ENV,
-        TMPDIR: process.env.TMPDIR,
-      },
+      env: workerEnvironment(),
       cwd: tmpDir,
     });
 
@@ -260,4 +255,57 @@ export class ProcessingPool {
     );
     this.workers.add(worker);
   }
+}
+
+/**
+ * Variables Windows itself needs for a child process to start.
+ *
+ * Without `SystemRoot`, PowerShell dies before running a line ("Loading managed
+ * Windows PowerShell failed with error 8009001d"); without `TEMP` and the
+ * profile folders, COM cannot start a desktop application such as SOLIDWORKS
+ * under the user's licence and settings. None of them carries a secret — they
+ * are the same for every process the user runs.
+ */
+const WINDOWS_ESSENTIALS = [
+  'SystemRoot',
+  'SystemDrive',
+  'windir',
+  'ComSpec',
+  'PATHEXT',
+  'TEMP',
+  'TMP',
+  'USERPROFILE',
+  'USERNAME',
+  'USERDOMAIN',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'ProgramData',
+  'ProgramFiles',
+  'ProgramFiles(x86)',
+  'ProgramW6432',
+  'CommonProgramFiles',
+  'CommonProgramFiles(x86)',
+  'PSModulePath',
+  'COMPUTERNAME',
+  'NUMBER_OF_PROCESSORS',
+  'PROCESSOR_ARCHITECTURE',
+  'OS',
+];
+
+function workerEnvironment(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    NODE_ENV: process.env.NODE_ENV,
+    TMPDIR: process.env.TMPDIR,
+  };
+  if (process.platform === 'win32') {
+    for (const name of WINDOWS_ESSENTIALS) {
+      const value = process.env[name];
+      if (value !== undefined) env[name] = value;
+    }
+  }
+  return env;
 }
