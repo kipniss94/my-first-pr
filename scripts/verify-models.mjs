@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Proof, on the machine that matters, that every SOLIDWORKS model opens.
+ * Proof, on the machine that matters, that every SOLIDWORKS model opens in 3D
+ * — with no CAD installed anywhere.
  *
  *   node scripts/verify-models.mjs [folder] [--assemblies] [--api http://127.0.0.1:4000]
  *
@@ -85,7 +86,10 @@ function classify(job) {
   const result = job.result ?? {};
   const viewer = String(result.viewer ?? '');
   if (viewer.startsWith('cad') && viewer !== 'cad-preview') {
-    return { outcome: '3d', reason: result.meta?.convertedVia === 'server converter' ? 'через SOLIDWORKS' : 'собственным чтением' };
+    const faces = result.meta?.faces;
+    const triangles = result.meta?.triangles;
+    const via = result.meta?.convertedVia === 'server converter' ? 'через внешний конвертер' : 'прочитано из файла';
+    return { outcome: '3d', reason: `${via}${faces ? `, граней ${faces}` : ''}${triangles ? `, треугольников ${triangles}` : ''}` };
   }
   return { outcome: 'no-3d', reason: (result.warnings ?? [])[0] ?? 'открыт без 3D-геометрии' };
 }
@@ -114,7 +118,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1p
 th{background:#f7fafc;font-weight:600}td.n{text-align:right;font-variant-numeric:tabular-nums}
 span.tag{display:inline-block;padding:1px 8px;border-radius:10px;color:#fff;font-size:12px}</style></head><body>
 <h1>Проверка моделей SOLIDWORKS в DocuView</h1>
-<p>${escape(summary.folder)} · ${escape(new Date().toLocaleString('ru-RU'))} · SOLIDWORKS ${summary.converter ? 'подключён' : '<b>не подключён</b>'}</p>
+<p>${escape(summary.folder)} · ${escape(new Date().toLocaleString('ru-RU'))} · без CAD — модели прочитаны из самих файлов</p>
 <div class="big">${summary.ok} из ${summary.real} открыты в 3D (${summary.percent}%)</div>
 <p>${summary.empty ? `Пустых файлов (0 байт, модели в них нет): ${summary.empty}. ` : ''}Среднее время: ${summary.avg} с на модель.</p>
 <table><tr><th>Файл</th><th>Размер, КБ</th><th>Результат</th><th>Время, с</th><th>Подробности</th></tr>
@@ -142,9 +146,6 @@ async function main() {
   } catch {
     console.log('  ОШИБКА: DocuView не запущен. Сначала запустите Start-DocuView.bat, затем эту проверку.');
     return 2;
-  }
-  if (!capabilities.cadConverter) {
-    console.log('  [!] SOLIDWORKS не подключён — проверяется только собственное чтение, 100% не будет.\n');
   }
 
   const files = findModels(folder);
@@ -179,7 +180,6 @@ async function main() {
   const times = real.map((r) => Number(r.seconds));
   const summary = {
     folder,
-    converter: Boolean(capabilities.cadConverter),
     real: real.length,
     ok,
     empty: rows.length - real.length,

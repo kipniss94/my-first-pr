@@ -8,24 +8,24 @@ const require = createRequire(import.meta.url);
 
 /* ---------------------------- occt-import-js ------------------------------ */
 
-interface OcctMesh {
+export interface OcctMesh {
   name?: string;
   color?: [number, number, number];
   brep_faces?: { first: number; last: number; color: [number, number, number] | null }[];
   attributes: {
-    position: { array: number[] };
-    normal?: { array: number[] };
+    position: { array: ArrayLike<number> };
+    normal?: { array: ArrayLike<number> };
   };
-  index: { array: number[] };
+  index: { array: ArrayLike<number> };
 }
 
-interface OcctNode {
+export interface OcctNode {
   name?: string;
   meshes: number[];
   children: OcctNode[];
 }
 
-interface OcctResult {
+export interface OcctResult {
   success: boolean;
   root: OcctNode;
   meshes: OcctMesh[];
@@ -151,11 +151,12 @@ export async function processOcct(ctx: ProcessorContext): Promise<JobResult> {
  * WebGL without a per-vertex JSON parse — the difference is seconds on a
  * million-triangle assembly.
  */
-async function writeNmg(
+export async function writeNmg(
   result: OcctResult,
   outDir: string,
   sourceSize: number,
   ctx: ProcessorContext,
+  producer: string = occtVersion(),
 ): Promise<NmgManifest> {
   await fs.mkdir(outDir, { recursive: true });
 
@@ -291,7 +292,7 @@ async function writeNmg(
     nodes,
     roots,
     stats: { meshes: meshes.length, triangles, vertices },
-    producer: occtVersion(),
+    producer,
     warnings,
   };
 

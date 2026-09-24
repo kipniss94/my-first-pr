@@ -1,5 +1,10 @@
 # Phase 1 — the container, decoded
 
+> **Superseded in part by [03-display-mesh.md](03-display-mesh.md).** The
+> "codec we cannot open" described below does not exist: the records are ZIP
+> local headers with the signature stripped, and read as such every part yields
+> its model, its display mesh and its preview.
+
 Result of running the lab over 21 real SolidWorks parts (controlled pairs:
 cube 10/20 mm, three boxes, four cylinders, fillet radii 2/5/10, chamfer,
 hole 10/20 mm, sheet metal flat and bent).
