@@ -41,3 +41,8 @@ npm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime logs of the Windows launcher and the SOLIDWORKS converter.
+logs/
+.build-stamp
+tools/solidworks/bin/
