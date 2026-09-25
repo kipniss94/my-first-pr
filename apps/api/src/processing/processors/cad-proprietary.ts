@@ -165,7 +165,7 @@ async function processAssembly(
     triangles += mesh.triangles;
     drawnInside += 1;
   }
-  const missingInside = embedded.length - drawnInside;
+  const missingInside = tree.instances.filter((instance) => instance.virtual).length - drawnInside;
   if (missingInside > 0) warnings.push(`${missingInside} component(s) saved inside this assembly could not be drawn.`);
 
   let geometry3d: string | null = null;
@@ -186,7 +186,7 @@ async function processAssembly(
   }
 
   /* ------------------------- components in own files ----------------------- */
-  const external = tree.instances.filter((instance) => !instance.embedded);
+  const external = tree.instances.filter((instance) => !instance.virtual);
   const componentNames: string[] = [];
   const seen = new Set<string>();
   for (const instance of external) {

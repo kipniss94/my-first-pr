@@ -1155,7 +1155,9 @@ class BrepMesher {
     // A loop of a single vertex marks a pole — a cone's apex, the tip of a
     // spun profile — and bounds nothing; where it is closes a cap below.
     // So does a loop that has shrunk to a point: an edge of zero length.
-    const isPoint = (loop: V3[]) => loop.length < 3 || loop.every((p) => dist(p, loop[0]) < this.tol);
+    // Not the chord tolerance: a sliver face a tenth of a millimetre across is
+    // still a face, while a loop at a pole is one point to rounding.
+    const isPoint = (loop: V3[]) => loop.length < 3 || loop.every((p) => dist(p, loop[0]) < 1e-7);
     const loops = allLoops.filter((loop) => !isPoint(loop));
     if (loops.length === 0) return this.fail('no loop of three points');
     const poles = allLoops.filter((loop) => loop.length > 0 && isPoint(loop)).map((loop) => surface.uv(loop[0], null));

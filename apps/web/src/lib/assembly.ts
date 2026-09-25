@@ -54,6 +54,21 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
   const [components, setComponents] = useState<ComponentView[]>(() => seed(assembly));
   const [rejected, setRejected] = useState<{ name: string; message: string } | null>(null);
   const watched = useRef(new Set<string>());
+  // Polls outlive re-renders: every result that arrives changes the list, and
+  // cancelling the rest each time would drop answers already on their way —
+  // with a folder of parts arriving at once, most of them. They stop only
+  // when the document closes.
+  const alive = useRef(true);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
+  useEffect(() => {
+    alive.current = true;
+    const pending = timers.current;
+    return () => {
+      alive.current = false;
+      for (const timer of pending) clearTimeout(timer);
+      pending.clear();
+    };
+  }, []);
 
   // Re-seed when a different document is opened, but never clobber components
   // the user has already supplied in this session.
@@ -74,17 +89,25 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
   /* ------------------------- watch component jobs ------------------------- */
 
   useEffect(() => {
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    let cancelled = false;
+    const schedule = (run: () => void, ms: number) => {
+      const timer = setTimeout(() => {
+        timers.current.delete(timer);
+        run();
+      }, ms);
+      timers.current.add(timer);
+    };
 
     for (const component of components) {
-      if (!component.jobId || component.status !== 'pending' || watched.current.has(component.jobId)) continue;
+      // Pending ones until they finish; ready ones reopened from the server
+      // (a reload, a shared link) once, for the result the scene needs.
+      const waiting = component.status === 'pending' || (component.status === 'ready' && !component.result);
+      if (!component.jobId || !waiting || watched.current.has(component.jobId)) continue;
       const jobId = component.jobId;
       const name = component.name;
       watched.current.add(jobId);
 
       const tick = async (): Promise<void> => {
-        if (cancelled) return;
+        if (!alive.current) return;
         let job: JobState;
         try {
           job = await getJob(jobId);
@@ -98,7 +121,7 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
           });
           return;
         }
-        if (cancelled) return;
+        if (!alive.current) return;
 
         if (job.status === 'succeeded') {
           patch(name, { status: 'ready', result: job.result, error: null });
@@ -111,16 +134,11 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
           });
           return;
         }
-        timers.push(setTimeout(tick, POLL_INTERVAL_MS));
+        schedule(() => void tick(), POLL_INTERVAL_MS);
       };
 
-      timers.push(setTimeout(tick, 0));
+      schedule(() => void tick(), 0);
     }
-
-    return () => {
-      cancelled = true;
-      for (const timer of timers) clearTimeout(timer);
-    };
   }, [components, patch]);
 
   /* ---------------------------- accept new files -------------------------- */
@@ -130,7 +148,22 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
       if (!parentJobId) return;
       setRejected(null);
 
-      for (const file of files) {
+      // A whole folder can be dropped: send only the files the assembly asks
+      // for, once each, and none it already has. A file it does not name is
+      // sent only when nothing else matched — the user may know better.
+      const state = new Map(components.map((c) => [c.name.toLowerCase(), c.status]));
+      const seen = new Set<string>();
+      const named = files.filter((file) => {
+        const key = file.name.toLowerCase();
+        if (!state.has(key) || seen.has(key)) return false;
+        seen.add(key);
+        const status = state.get(key);
+        return status === 'missing' || status === 'failed';
+      });
+      const anyNamed = files.some((file) => state.has(file.name.toLowerCase()));
+      const toSend = state.size > 0 && anyNamed ? named : files;
+
+      for (const file of toSend) {
         // Show the row as busy straight away, adding it if the assembly did not
         // name this file — the user knows their own model better than our scan.
         setComponents((current) => {

@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { computeSurfaceArea, computeVolume } from '@/lib/cad/geometry';
-import { loadMeshFile, loadNmg, mergeModels, type MergeSource } from '@/lib/cad/loaders';
+import type { AssemblyPlacement } from '@docuview/shared';
+import { loadMeshFile, loadNmg, mergeModels, placeModels, type MergeSource } from '@/lib/cad/loaders';
 import { CadScene, disposeObject, type SelectionInfo } from '@/lib/cad/scene';
 import type { RenderableComponent } from '@/lib/assembly';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
@@ -36,6 +37,11 @@ interface CadViewerProps {
    * ones already on screen.
    */
   components?: RenderableComponent[];
+  /**
+   * Where each component goes, read from the assembly. With these the parts
+   * are put in place; without them they are laid out side by side.
+   */
+  placements?: AssemblyPlacement[];
   /** Sentence shown under the tree when component placement is approximate. */
   layoutNote?: string;
   onProgress(percent: number): void;
@@ -62,6 +68,7 @@ export function CadViewer({
   mode,
   fileName,
   components,
+  placements,
   layoutNote,
   onProgress,
   onReady,
@@ -193,6 +200,8 @@ export function CadViewer({
     const run = async (): Promise<void> => {
       const cache = loadedRef.current;
       const sources: MergeSource[] = [];
+      let primary: CadModel | null = null;
+      const parts: MergeSource[] = [];
       let loadedAny = false;
 
       for (const entry of wanted) {
@@ -204,6 +213,8 @@ export function CadViewer({
           loadedAny = true;
         }
         sources.push({ name: entry.name, model });
+        if (entry.key.startsWith('primary:')) primary = model;
+        else parts.push({ name: entry.name, model });
       }
 
       // Drop anything that is no longer part of the document.
@@ -215,7 +226,11 @@ export function CadViewer({
         }
       }
 
-      const merged = sources.length === 1 && !components?.length ? sources[0].model : mergeModels(sources, fileName);
+      const merged = placements?.length
+        ? placeModels(primary, parts, placements, fileName)
+        : sources.length === 1 && !components?.length
+          ? sources[0].model
+          : mergeModels(sources, fileName);
       if (cancelled) return;
 
       if (merged.parts.length === 0) {
@@ -260,7 +275,7 @@ export function CadViewer({
       cancelled = true;
       controller.abort();
     };
-  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, source]);
+  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, placements, source]);
 
   /* ----------------------------- state → scene ---------------------------- */
 

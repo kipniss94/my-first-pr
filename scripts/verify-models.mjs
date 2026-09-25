@@ -10,6 +10,10 @@
  * the job — and records whether it came back as real 3D geometry. Writes an
  * HTML and a CSV report to logs/ and exits 0 only if every non-empty model did.
  *
+ * An assembly counts as 3D when every part it places was found — beside it
+ * first, then anywhere under the folder — and opens in 3D itself, or when its
+ * parts are saved inside it. Parts are checked once and reused by assemblies.
+ *
  * Default folder: C:\User\3D\SW on Windows, ./samples elsewhere.
  */
 
@@ -46,7 +50,40 @@ function findModels(dir) {
     }
   };
   walk(dir);
-  return found.sort((a, b) => a.localeCompare(b));
+  // Parts first, so the assemblies can reuse what their parts gave.
+  const isAssembly = (file) => /\.sldasm$/i.test(file);
+  return found.sort((a, b) => Number(isAssembly(a)) - Number(isAssembly(b)) || a.localeCompare(b));
+}
+
+/** Every part file under the folder, by lower-case name. */
+function indexParts(dir) {
+  const index = new Map();
+  const walk = (current) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (/\.sldprt$/i.test(entry.name) && !entry.name.startsWith('~$')) {
+        const key = entry.name.toLowerCase();
+        index.set(key, [...(index.get(key) ?? []), full]);
+      }
+    }
+  };
+  walk(dir);
+  return index;
+}
+
+/** The copy of a part nearest the assembly asking for it: same folder, then the closest relative. */
+function locate(index, name, assembly) {
+  const candidates = index.get(name.toLowerCase());
+  if (!candidates) return null;
+  const home = path.dirname(assembly).toLowerCase().split(path.sep);
+  const shared = (file) => {
+    const parts = path.dirname(file).toLowerCase().split(path.sep);
+    let n = 0;
+    while (n < parts.length && n < home.length && parts[n] === home[n]) n += 1;
+    return n * 1000 - parts.length;
+  };
+  return [...candidates].sort((a, b) => shared(b) - shared(a))[0];
 }
 
 async function upload(file) {
@@ -100,6 +137,47 @@ function classify(job) {
   return { outcome: 'no-3d', reason: (result.warnings ?? [])[0] ?? 'открыт без 3D-геометрии' };
 }
 
+/** An assembly: are all the parts it places found, and do they open in 3D? */
+async function classifyAssembly(job, file, index, parts) {
+  if (job.status === 'failed') return { outcome: 'error', reason: job.error?.message ?? 'processing failed' };
+  const meta = job.result?.meta ?? {};
+  if (typeof meta.instances !== 'number') return { outcome: 'no-3d', reason: 'в сборке не найдено дерево компонентов' };
+  if (meta.instances === 0) return { outcome: 'empty', reason: 'сборка пустая — в ней нет ни одной видимой детали' };
+  const names = Array.isArray(meta.componentNames) ? meta.componentNames : [];
+  const missing = [];
+  const broken = [];
+  for (const name of names) {
+    const found = locate(index, name, file);
+    if (!found) {
+      missing.push(name);
+      continue;
+    }
+    let part = parts.get(found);
+    if (!part) {
+      try {
+        part = classify(await waitForJob(await upload(found)));
+      } catch (err) {
+        part = { outcome: 'error', reason: err instanceof Error ? err.message : String(err) };
+      }
+      parts.set(found, part);
+    }
+    if (part.outcome !== '3d' && part.outcome !== 'empty') broken.push(name);
+  }
+  const inside = meta.instancesInside ?? 0;
+  const placed = `сборка: ${meta.instances} деталей на местах${inside ? `, из них ${inside} сохранены внутри сборки` : ''}, файлов деталей ${names.length}`;
+  if (missing.length === 0 && broken.length === 0) return { outcome: '3d', reason: placed };
+  const list = (items) => `${items.slice(0, 5).join(', ')}${items.length > 5 ? ` и ещё ${items.length - 5}` : ''}`;
+  return {
+    outcome: 'partial',
+    reason: [
+      missing.length ? `не найдено файлов деталей: ${missing.length} из ${names.length} (${list(missing)})` : '',
+      broken.length ? `не открылись: ${list(broken)}` : '',
+    ]
+      .filter(Boolean)
+      .join('; '),
+  };
+}
+
 const escape = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
 function writeReports(rows, summary) {
@@ -114,8 +192,8 @@ function writeReports(rows, summary) {
   const csvPath = path.join(logs, `model-check-${tag}.csv`);
   fs.writeFileSync(csvPath, `\ufeff${csv}`);
 
-  const label = { '3d': '3D', 'no-3d': 'без 3D', error: 'ошибка', empty: 'пусто' };
-  const colour = { '3d': '#1f8a4c', 'no-3d': '#b7791f', error: '#c53030', empty: '#718096' };
+  const label = { '3d': '3D', 'no-3d': 'без 3D', error: 'ошибка', empty: 'пусто', partial: 'частично' };
+  const colour = { '3d': '#1f8a4c', 'no-3d': '#b7791f', error: '#c53030', empty: '#718096', partial: '#d69e2e' };
   const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Проверка моделей SOLIDWORKS</title>
 <style>body{font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:24px;color:#1a202c;background:#fff}
 h1{font-size:20px;margin:0 0 4px}p{margin:4px 0 16px;color:#4a5568}
@@ -127,6 +205,7 @@ span.tag{display:inline-block;padding:1px 8px;border-radius:10px;color:#fff;font
 <p>${escape(summary.folder)} · ${escape(new Date().toLocaleString('ru-RU'))} · без CAD — модели прочитаны из самих файлов</p>
 <div class="big">${summary.ok} из ${summary.real} открыты в 3D (${summary.percent}%)</div>
 <p>${summary.fromBrep ? `Из них построено из точной геометрии (в файле не было готовой сетки): ${summary.fromBrep}. ` : ''}${summary.empty ? `Пустых — модели в них нет (файл 0 байт или деталь без единого тела): ${summary.empty}. ` : ''}Среднее время: ${summary.avg} с на модель.</p>
+${summary.assemblies ? `<div class="big" style="font-size:24px;color:${summary.assembliesOk === summary.assemblies ? '#1f8a4c' : '#b7791f'}">Сборки: ${summary.assembliesOk} из ${summary.assemblies} собраны целиком</div><p>Сборка считается собранной, когда все её детали найдены в папке и открываются в 3D. ${summary.assembliesPartial ? `Частично — не хватает файлов деталей: ${summary.assembliesPartial}.` : ''}</p>` : ''}
 <table><tr><th>Файл</th><th>Размер, КБ</th><th>Результат</th><th>Время, с</th><th>Подробности</th></tr>
 ${rows
   .map(
@@ -155,6 +234,8 @@ async function main() {
   }
 
   const files = findModels(folder);
+  const partIndex = withAssemblies ? indexParts(folder) : new Map();
+  const parts = new Map();
   if (files.length === 0) {
     console.log('  В папке нет файлов .SLDPRT.');
     return 2;
@@ -170,40 +251,50 @@ async function main() {
       row = { outcome: 'empty', reason: 'файл пустой (0 байт) — модели в нём нет' };
     } else {
       try {
-        row = classify(await waitForJob(await upload(file)));
+        const job = await waitForJob(await upload(file));
+        row = /\.sldasm$/i.test(file) ? await classifyAssembly(job, file, partIndex, parts) : classify(job);
       } catch (err) {
         row = { outcome: 'error', reason: err instanceof Error ? err.message : String(err) };
       }
     }
+    if (/\.sldprt$/i.test(file)) parts.set(file, row);
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
-    rows.push({ file: name, sizeKb: Math.round(size / 1024), seconds, ...row });
-    const mark = { '3d': ' 3D  ', 'no-3d': 'без3D', error: 'ОШИБ ', empty: 'пуст ' }[row.outcome];
+    rows.push({ file: name, sizeKb: Math.round(size / 1024), seconds, kind: /\.sldasm$/i.test(file) ? 'assembly' : 'part', ...row });
+    const mark = { '3d': ' 3D  ', 'no-3d': 'без3D', error: 'ОШИБ ', empty: 'пуст ', partial: 'част ' }[row.outcome];
     console.log(`  [${String(index + 1).padStart(4)}/${files.length}] ${mark} ${seconds.padStart(6)} с  ${name}`);
   }
 
-  const real = rows.filter((r) => r.outcome !== 'empty');
+  const assemblies = rows.filter((r) => r.kind === 'assembly' && r.outcome !== 'empty');
+  const real = rows.filter((r) => r.kind !== 'assembly' && r.outcome !== 'empty');
   const ok = real.filter((r) => r.outcome === '3d').length;
   const times = real.map((r) => Number(r.seconds));
   const summary = {
     folder,
     real: real.length,
     ok,
-    empty: rows.length - real.length,
+    empty: rows.filter((r) => r.kind !== 'assembly').length - real.length,
     percent: real.length ? ((100 * ok) / real.length).toFixed(1) : '0',
     avg: times.length ? (times.reduce((a, b) => a + b, 0) / times.length).toFixed(1) : '0',
     all: ok === real.length,
     fromBrep: real.filter((r) => r.reason.startsWith('построено')).length,
+    assemblies: assemblies.length,
+    assembliesOk: assemblies.filter((r) => r.outcome === '3d').length,
+    assembliesPartial: assemblies.filter((r) => r.outcome === 'partial').length,
   };
   const { htmlPath, csvPath } = writeReports(rows, summary);
 
   console.log(`\n  ИТОГ: ${ok} из ${real.length} моделей открыты в 3D (${summary.percent}%)${summary.fromBrep ? `, из них построено из точной геометрии: ${summary.fromBrep}` : ''}${summary.empty ? `, пустых: ${summary.empty}` : ''}`);
   for (const r of real.filter((x) => x.outcome !== '3d')) console.log(`    - ${r.file}: ${r.reason}`);
+  if (summary.assemblies) {
+    console.log(`\n  СБОРКИ: ${summary.assembliesOk} из ${summary.assemblies} собраны целиком (все детали найдены и на местах)${summary.assembliesPartial ? `, частично: ${summary.assembliesPartial}` : ''}`);
+    for (const r of assemblies.filter((x) => x.outcome !== '3d').slice(0, 30)) console.log(`    - ${r.file}: ${r.reason}`);
+  }
   console.log(`\n  Отчёт: ${htmlPath}\n         ${csvPath}\n`);
 
   if (process.platform === 'win32') {
     spawn('rundll32', ['url.dll,FileProtocolHandler', htmlPath], { detached: true, stdio: 'ignore' }).unref();
   }
-  return summary.all ? 0 : 1;
+  return summary.all && assemblies.every((r) => r.outcome !== 'error') ? 0 : 1;
 }
 
 main().then((code) => process.exit(code));

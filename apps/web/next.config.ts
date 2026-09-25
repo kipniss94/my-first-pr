@@ -11,6 +11,9 @@ import type { NextConfig } from 'next';
 const apiTarget = process.env.API_INTERNAL_URL ?? 'http://127.0.0.1:4000';
 
 const nextConfig: NextConfig = {
+  // A second build can sit beside the one being served — a check run while
+  // the viewer stays open — when this names another folder.
+  distDir: process.env.NEXT_DIST_DIR ?? '.next',
   reactStrictMode: true,
   poweredByHeader: false,
   async rewrites() {

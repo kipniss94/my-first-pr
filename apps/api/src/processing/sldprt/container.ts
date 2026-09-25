@@ -127,7 +127,11 @@ function tryEntry(buffer: Buffer, at: number): { entry: PackageEntry; next: numb
   }
   if (data.length !== size || crc32(data) !== crc) return null;
 
-  const name = unswapNibbles(buffer.subarray(at + LOCAL_HEADER_BYTES, at + LOCAL_HEADER_BYTES + nameLength)).toString('latin1');
+  // Names are UTF-8 — a virtual component can be called anything — though the
+  // header does not flag it; bytes that are not valid UTF-8 are read as Latin-1.
+  const raw = unswapNibbles(buffer.subarray(at + LOCAL_HEADER_BYTES, at + LOCAL_HEADER_BYTES + nameLength));
+  const utf8 = raw.toString('utf8');
+  const name = utf8.includes('�') ? raw.toString('latin1') : utf8;
   return { entry: { name, offset: at, data }, next: start + compressed };
 }
 

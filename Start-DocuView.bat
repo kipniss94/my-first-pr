@@ -2,9 +2,9 @@
 rem ---------------------------------------------------------------------------
 rem  DocuView - one-click start. Double-click this file.
 rem
-rem  Installs what is missing, builds when the sources changed, connects the
-rem  SOLIDWORKS installed on this PC, starts everything in the background and
-rem  opens the viewer in the browser. The logic lives in tools\launcher.mjs.
+rem  Installs what is missing, builds when the sources changed, starts
+rem  everything in the background and opens the viewer in the browser. No CAD
+rem  is needed. The logic lives in tools\launcher.mjs.
 rem
 rem  Plain ASCII on purpose: cmd.exe reads batch files in the OEM code page, and
 rem  Cyrillic text inside a .bat is a classic cause of a launcher that breaks.

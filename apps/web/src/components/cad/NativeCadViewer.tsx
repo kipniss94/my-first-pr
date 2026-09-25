@@ -97,19 +97,21 @@ export function NativeCadViewer({
   }
 
   const isAssembly = document.role === 'assembly' || components.length > 0;
-  const showGeometry = renderable.length > 0;
+  const placed = Boolean(document.placements?.length);
+  const showGeometry = renderable.length > 0 || Boolean(document.geometry3d);
 
   return (
     <div className="flex min-h-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col bg-[#0e131b]">
         {showGeometry ? (
           <CadViewer
-            source={null}
+            source={document.geometry3d ?? null}
             meta={{}}
             mode="nmg"
             fileName={fileName}
             components={renderable}
-            layoutNote={LAYOUT_NOTE}
+            placements={placed || document.geometry3d ? (document.placements ?? []) : undefined}
+            layoutNote={placed || document.geometry3d ? undefined : LAYOUT_NOTE}
             onProgress={() => undefined}
             onReady={() => undefined}
           />
@@ -119,7 +121,7 @@ export function NativeCadViewer({
       </div>
 
       <aside className="hidden w-80 shrink-0 flex-col overflow-y-auto border-l border-line bg-ink-850 lg:flex">
-        <GeometryNotice document={document} showingGeometry={showGeometry} />
+        <GeometryNotice document={document} showingGeometry={showGeometry} placed={placed} />
         {document.measured && <MeasuredSize measured={document.measured} />}
         {isAssembly && (
           <ComponentsPanel
@@ -183,7 +185,35 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
 
 /* ------------------------------ side panels -------------------------------- */
 
-function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocument; showingGeometry: boolean }) {
+/** Every file under dropped folders, however deep. */
+async function filesIn(entries: FileSystemEntry[]): Promise<File[]> {
+  const files: File[] = [];
+  const visit = async (entry: FileSystemEntry): Promise<void> => {
+    if (entry.isFile) {
+      files.push(await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject)));
+      return;
+    }
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    // readEntries hands the listing over in batches until it returns none.
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+      if (batch.length === 0) break;
+      for (const child of batch) await visit(child);
+    }
+  };
+  for (const entry of entries) await visit(entry);
+  return files;
+}
+
+function GeometryNotice({
+  document,
+  showingGeometry,
+  placed,
+}: {
+  document: NativeCadDocument;
+  showingGeometry: boolean;
+  placed: boolean;
+}) {
   return (
     <section className="border-b border-line p-4">
       <div className="flex items-center gap-2">
@@ -201,7 +231,11 @@ function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocu
       </div>
       <p className="mt-3 text-[12px] leading-relaxed text-mist-400">
         {showingGeometry
-          ? 'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.'
+          ? placed
+            ? `Every part stands where the assembly puts it. ${document.note}`
+            : document.geometry3d
+              ? document.note
+              : 'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.'
           : document.note}
       </p>
     </section>
@@ -258,6 +292,7 @@ function ComponentsPanel({
   disabled: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   const accept = useCallback(
@@ -303,7 +338,14 @@ function ComponentsPanel({
         onDrop={(event) => {
           event.preventDefault();
           setDragging(false);
-          if (!disabled) accept(event.dataTransfer?.files ?? null);
+          if (disabled) return;
+          const items = Array.from(event.dataTransfer?.items ?? []);
+          const entries = items.map((item) => item.webkitGetAsEntry?.()).filter((entry): entry is FileSystemEntry => Boolean(entry));
+          if (entries.some((entry) => entry.isDirectory)) {
+            void filesIn(entries).then((files) => files.length > 0 && onAdd(files));
+          } else {
+            accept(event.dataTransfer?.files ?? null);
+          }
         }}
         className={`mt-3 rounded-xl border-2 border-dashed px-3 py-4 text-center text-[12px] transition-colors ${
           disabled
@@ -315,7 +357,7 @@ function ComponentsPanel({
       >
         {disabled
           ? 'This session has expired, so components can no longer be added.'
-          : 'Drop the component files here — they appear in the model as each one is ready.'}
+          : 'Drop the component files — or the whole folder — here. Each part appears in place as soon as it is ready.'}
         <input
           ref={inputRef}
           type="file"
@@ -328,6 +370,27 @@ function ComponentsPanel({
           }}
         />
       </div>
+      {!disabled && (
+        <button
+          type="button"
+          className="mt-2 w-full rounded-lg border border-line px-3 py-1.5 text-[12px] text-mist-300 hover:border-accent/60"
+          onClick={() => folderRef.current?.click()}
+        >
+          Choose the folder with the parts…
+        </button>
+      )}
+      <input
+        ref={folderRef}
+        type="file"
+        multiple
+        className="sr-only"
+        data-testid="component-folder-input"
+        {...{ webkitdirectory: '', directory: '' }}
+        onChange={(event) => {
+          accept(event.target.files);
+          event.target.value = '';
+        }}
+      />
 
       {rejected && (
         <div role="alert" className="mt-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2">

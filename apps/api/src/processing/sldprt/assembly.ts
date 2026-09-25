@@ -36,6 +36,8 @@ export interface AssemblyInstance {
   matrix: number[];
   /** The document of a component saved inside the assembly, when it is one. */
   embedded: PackageEntry[] | null;
+  /** Saved inside the assembly (virtual), whether or not its document was found. */
+  virtual: boolean;
 }
 
 export interface AssemblyTree {
@@ -130,7 +132,7 @@ function embeddedDocument(entries: PackageEntry[], name: string): PackageEntry[]
   return nested.length > 0 ? nested : null;
 }
 
-export function readAssemblyTree(entries: PackageEntry[]): AssemblyTree | null {
+export function readAssemblyTree(entries: PackageEntry[], level = 0): AssemblyTree | null {
   const xml = treeXml(entries);
   if (!xml) return null;
   const parser = new XMLParser({
@@ -197,8 +199,27 @@ export function readAssemblyTree(entries: PackageEntry[]): AssemblyTree | null {
       const name = `${shortName}-${reference.number}`;
       const embedded = reference.virtual && document ? embeddedDocument(document, shortName) : null;
       if (file.type === 'ASSEMBLY') {
-        if (child.references.length > 0 && depth < MAX_DEPTH) expand(child, placed, [...path, name], embedded, depth + 1);
-        else tree.unexpanded.push(baseName(file.path));
+        if (child.references.length > 0 && depth < MAX_DEPTH) {
+          expand(child, placed, [...path, name], embedded, depth + 1);
+          continue;
+        }
+        // A sub-assembly saved inside this one may keep its own tree in its
+        // own document rather than in ours.
+        const inner = embedded && depth < MAX_DEPTH ? readAssemblyTree(embedded, depth + 1) : null;
+        if (!inner) {
+          tree.unexpanded.push(baseName(file.path));
+          continue;
+        }
+        for (const instance of inner.instances) {
+          const local = [...instance.matrix];
+          for (const i of [12, 13, 14]) local[i] /= 1000;
+          const matrix = multiply(placed, local);
+          for (const i of [12, 13, 14]) matrix[i] *= 1000;
+          tree.instances.push({ ...instance, path: [...path, name, ...instance.path], matrix });
+        }
+        tree.suppressed += inner.suppressed;
+        tree.hidden += inner.hidden;
+        tree.unexpanded.push(...inner.unexpanded);
         continue;
       }
       const inMillimetres = [...placed];
@@ -209,9 +230,10 @@ export function readAssemblyTree(entries: PackageEntry[]): AssemblyTree | null {
         path: [...path, name],
         matrix: inMillimetres,
         embedded: reference.virtual ? embedded : null,
+        virtual: reference.virtual,
       });
     }
   };
-  expand(root, IDENTITY, [], entries, 0);
+  expand(root, IDENTITY, [], entries, level);
   return tree;
 }
