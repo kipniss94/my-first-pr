@@ -88,9 +88,15 @@ function classify(job) {
   if (viewer.startsWith('cad') && viewer !== 'cad-preview') {
     const faces = result.meta?.faces;
     const triangles = result.meta?.triangles;
-    const via = result.meta?.convertedVia === 'server converter' ? 'через внешний конвертер' : 'прочитано из файла';
+    const via =
+      result.meta?.convertedVia === 'server converter'
+        ? 'через внешний конвертер'
+        : result.meta?.meshSource === 'b-rep'
+          ? 'построено из точной геометрии (Parasolid)'
+          : 'прочитано из файла';
     return { outcome: '3d', reason: `${via}${faces ? `, граней ${faces}` : ''}${triangles ? `, треугольников ${triangles}` : ''}` };
   }
+  if (result.meta?.emptyModel) return { outcome: 'empty', reason: 'деталь пустая — в ней нет ни одного тела' };
   return { outcome: 'no-3d', reason: (result.warnings ?? [])[0] ?? 'открыт без 3D-геометрии' };
 }
 
@@ -108,7 +114,7 @@ function writeReports(rows, summary) {
   const csvPath = path.join(logs, `model-check-${tag}.csv`);
   fs.writeFileSync(csvPath, `\ufeff${csv}`);
 
-  const label = { '3d': '3D', 'no-3d': 'без 3D', error: 'ошибка', empty: 'пустой файл' };
+  const label = { '3d': '3D', 'no-3d': 'без 3D', error: 'ошибка', empty: 'пусто' };
   const colour = { '3d': '#1f8a4c', 'no-3d': '#b7791f', error: '#c53030', empty: '#718096' };
   const html = `<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Проверка моделей SOLIDWORKS</title>
 <style>body{font:14px/1.45 system-ui,Segoe UI,sans-serif;margin:24px;color:#1a202c;background:#fff}
@@ -120,7 +126,7 @@ span.tag{display:inline-block;padding:1px 8px;border-radius:10px;color:#fff;font
 <h1>Проверка моделей SOLIDWORKS в DocuView</h1>
 <p>${escape(summary.folder)} · ${escape(new Date().toLocaleString('ru-RU'))} · без CAD — модели прочитаны из самих файлов</p>
 <div class="big">${summary.ok} из ${summary.real} открыты в 3D (${summary.percent}%)</div>
-<p>${summary.empty ? `Пустых файлов (0 байт, модели в них нет): ${summary.empty}. ` : ''}Среднее время: ${summary.avg} с на модель.</p>
+<p>${summary.fromBrep ? `Из них построено из точной геометрии (в файле не было готовой сетки): ${summary.fromBrep}. ` : ''}${summary.empty ? `Пустых — модели в них нет (файл 0 байт или деталь без единого тела): ${summary.empty}. ` : ''}Среднее время: ${summary.avg} с на модель.</p>
 <table><tr><th>Файл</th><th>Размер, КБ</th><th>Результат</th><th>Время, с</th><th>Подробности</th></tr>
 ${rows
   .map(
@@ -186,10 +192,11 @@ async function main() {
     percent: real.length ? ((100 * ok) / real.length).toFixed(1) : '0',
     avg: times.length ? (times.reduce((a, b) => a + b, 0) / times.length).toFixed(1) : '0',
     all: ok === real.length,
+    fromBrep: real.filter((r) => r.reason.startsWith('построено')).length,
   };
   const { htmlPath, csvPath } = writeReports(rows, summary);
 
-  console.log(`\n  ИТОГ: ${ok} из ${real.length} моделей открыты в 3D (${summary.percent}%)${summary.empty ? `, пустых файлов: ${summary.empty}` : ''}`);
+  console.log(`\n  ИТОГ: ${ok} из ${real.length} моделей открыты в 3D (${summary.percent}%)${summary.fromBrep ? `, из них построено из точной геометрии: ${summary.fromBrep}` : ''}${summary.empty ? `, пустых: ${summary.empty}` : ''}`);
   for (const r of real.filter((x) => x.outcome !== '3d')) console.log(`    - ${r.file}: ${r.reason}`);
   console.log(`\n  Отчёт: ${htmlPath}\n         ${csvPath}\n`);
 

@@ -351,6 +351,24 @@ export interface AssemblyState {
 export type NativeCadRole = 'part' | 'assembly' | 'drawing' | 'unknown';
 
 /**
+ * Where one occurrence of a component sits in an assembly.
+ *
+ * An assembly names each part file once per place it is used, with the
+ * transform SolidWorks keeps for it; sub-assemblies are already opened up, so
+ * every entry is a part, placed relative to the top-level assembly.
+ */
+export interface AssemblyPlacement {
+  /** Part file the geometry comes from, as the assembly names it. */
+  component: string;
+  /** Configuration of that part used here. */
+  configuration: string;
+  /** Instance names from the top of the tree down, e.g. `["Frame-1", "Bolt-3"]`. */
+  path: string[];
+  /** 4×4 placement, column-major (three.js `Matrix4.fromArray` order), in millimetres. */
+  matrix: number[];
+}
+
+/**
  * A proprietary CAD document opened without its vendor kernel.
  *
  * `geometry` says plainly what is behind the picture: `preview-only` means the
@@ -382,4 +400,14 @@ export interface NativeCadDocument {
   } | null;
   /** One paragraph, shown verbatim in the viewer. */
   note: string;
+  /**
+   * For an assembly whose placements could be read: every part occurrence
+   * whose geometry comes from a separate file, with its transform.
+   */
+  placements?: AssemblyPlacement[];
+  /**
+   * Geometry the assembly carries itself — components saved inside it
+   * (virtual components) — already placed, as an NMG manifest URL.
+   */
+  geometry3d?: string | null;
 }

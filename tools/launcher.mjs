@@ -197,8 +197,8 @@ function checkNode() {
 }
 
 async function ensureDependencies() {
-  const lock = fs.readFileSync(path.join(root, 'package-lock.json'));
-  const hash = createHash('sha256').update(lock).digest('hex');
+  const lockHash = () => createHash('sha256').update(fs.readFileSync(path.join(root, 'package-lock.json'))).digest('hex');
+  const hash = lockHash();
   const hashFile = path.join(root, 'node_modules', '.docuview-lock-hash');
   const current =
     fs.existsSync(path.join(root, 'node_modules', '.package-lock.json')) &&
@@ -212,7 +212,10 @@ async function ensureDependencies() {
         'Если повторяется — удалите папку node_modules и запустите снова.',
       ]);
     }
-    fs.writeFileSync(hashFile, hash);
+    // Taken again after the install, like the build stamp: a newer npm rewrites
+    // package-lock.json as it installs, and the hash from before would make the
+    // next start install everything again.
+    fs.writeFileSync(hashFile, lockHash());
   }
   ok('Зависимости на месте');
 }

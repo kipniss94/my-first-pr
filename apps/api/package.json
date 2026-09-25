@@ -15,6 +15,7 @@
     "@docuview/shared": "*",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
+    "earcut": "^3.2.3",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
