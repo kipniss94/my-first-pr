@@ -46,6 +46,10 @@ export interface AssemblyTree {
   hidden: number;
   /** Sub-assemblies the tree names but does not open up. */
   unexpanded: string[];
+  /** Every file the tree names below the top — parts and sub-assemblies. */
+  files: string[];
+  /** Extent of the whole assembly as SolidWorks recorded it, mm: min xyz, max xyz. */
+  boundingBoxMm: number[] | null;
 }
 
 /** The named entries of a SolidWorks document, whichever container holds them. */
@@ -70,6 +74,7 @@ interface Reference {
 
 interface Model {
   fileRef: string;
+  boundingBox: number[] | null;
   references: Reference[];
 }
 
@@ -156,6 +161,10 @@ export function readAssemblyTree(entries: PackageEntry[], level = 0): AssemblyTr
   for (const model of asList((document.swModelList as XmlNode | undefined)?.swModel)) {
     models.set(String(model.id), {
       fileRef: String(model.swFileRef ?? ''),
+      boundingBox: (() => {
+        const box = String(model.swBoundingBox ?? '').trim().split(/\s+/).map(Number);
+        return box.length === 6 && box.every(Number.isFinite) ? box.map((value) => value * 1000) : null;
+      })(),
       references: asList(model.swReference).map((reference) => ({
         name: String(reference.swName ?? ''),
         number: String(reference.swReferenceNumber ?? ''),
@@ -178,7 +187,14 @@ export function readAssemblyTree(entries: PackageEntry[], level = 0): AssemblyTr
     [...models.values()].find((model) => model.fileRef === String(firstFile?.id));
   if (!root) return null;
 
-  const tree: AssemblyTree = { instances: [], suppressed: 0, hidden: 0, unexpanded: [] };
+  const tree: AssemblyTree = {
+    instances: [],
+    suppressed: 0,
+    hidden: 0,
+    unexpanded: [],
+    files: [...files.entries()].filter(([id]) => id !== root.fileRef).map(([, file]) => baseName(file.path)),
+    boundingBoxMm: root.boundingBox,
+  };
   const expand = (model: Model, matrix: number[], path: string[], document: PackageEntry[] | null, depth: number) => {
     for (const reference of model.references) {
       if (tree.instances.length >= MAX_INSTANCES) return;

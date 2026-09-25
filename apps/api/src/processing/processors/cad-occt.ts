@@ -157,6 +157,8 @@ export async function writeNmg(
   sourceSize: number,
   ctx: ProcessorContext,
   producer: string = occtVersion(),
+  /** File name stem: `model` writes model.nmg.json and model.bin. */
+  baseName = 'model',
 ): Promise<NmgManifest> {
   await fs.mkdir(outDir, { recursive: true });
 
@@ -281,13 +283,13 @@ export async function writeNmg(
   }
 
   const buffer = Buffer.concat(chunks);
-  await fs.writeFile(path.join(outDir, 'model.bin'), buffer);
+  await fs.writeFile(path.join(outDir, `${baseName}.bin`), buffer);
 
   const manifest: NmgManifest = {
     version: 1,
     units: 'mm',
     bbox: { min, max },
-    buffer: { uri: 'model.bin', byteLength: buffer.byteLength },
+    buffer: { uri: `${baseName}.bin`, byteLength: buffer.byteLength },
     meshes,
     nodes,
     roots,
@@ -296,7 +298,7 @@ export async function writeNmg(
     warnings,
   };
 
-  await fs.writeFile(path.join(outDir, 'model.nmg.json'), JSON.stringify(manifest));
+  await fs.writeFile(path.join(outDir, `${baseName}.nmg.json`), JSON.stringify(manifest));
   ctx.log(
     'info',
     `normalized ${meshes.length} solids / ${triangles} triangles from a ${(sourceSize / 1048576).toFixed(1)} MB file`,

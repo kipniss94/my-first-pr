@@ -133,18 +133,19 @@ api.post('/jobs/:jobId/components', uploadLimiter, (req: Request, res: Response)
     const assembly = parent.assembly;
     if (!assembly) return;
 
-    const job = queue.enqueue({
-      fileId: stored.fileId,
-      fileName: stored.meta.displayName,
-      size: stored.meta.size,
-      expiresAt: stored.meta.expiresAt,
-    });
-
     // Match on the name the assembly asked for. A file nobody asked for is
     // still accepted and appended: our reference scan can miss a component,
     // and refusing a part the user knows belongs here would be wrong.
     const wanted = stored.meta.displayName.toLowerCase();
     const existing = assembly.components.find((component) => component.name.toLowerCase() === wanted);
+
+    const job = queue.enqueue({
+      fileId: stored.fileId,
+      fileName: stored.meta.displayName,
+      size: stored.meta.size,
+      expiresAt: stored.meta.expiresAt,
+      configurations: existing?.configurations,
+    });
     const component = existing ?? { name: stored.meta.displayName, status: 'missing' as const, jobId: null, fileId: null };
     if (!existing) assembly.components.push(component);
 

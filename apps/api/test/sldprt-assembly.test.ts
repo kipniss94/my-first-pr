@@ -23,7 +23,7 @@ const tree = `<?xml version="1.0" encoding="UTF-8"?>
    <swReference swName="Bolt" swReferenceNumber="1" swConfigurationName="M6" swSuppressed="NO" swHidden="NO" swModelRef="30"
      swTransform="0 1 0 0 -1 0 0 0 0 0 1 0 0.01 0 0 1"/>
   </swModel>
-  <swModel id="10" swName="Top" swFileRef="1">
+  <swModel id="10" swName="Top" swFileRef="1" swBoundingBox="-0.01 0 0 0.02 0.03 0.1">
    <swReference swName="Sub" swReferenceNumber="1" swSuppressed="NO" swHidden="NO" swModelRef="20"
      swTransform="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.1 1"/>
    <swReference swName="Plate" swReferenceNumber="1" swSuppressed="NO" swHidden="NO" swModelRef="40"
@@ -58,6 +58,14 @@ describe('assembly placements', () => {
     // sub-assembly, which is itself 100 mm up Z in the top level.
     const bolt = result.instances[0].matrix.map((value) => Math.round(value * 1e9) / 1e9);
     assert.deepEqual(bolt, [0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 1, 0, 10, 0, 100, 1]);
+  });
+
+  it('names every file below the top — the relations a drop of many files is sorted by', () => {
+    const result = readAssemblyTree(entries);
+    assert.ok(result);
+    assert.deepEqual(result.files, ['Sub.SLDASM', 'Bolt.SLDPRT', 'Plate.SLDPRT']);
+    // SolidWorks' own extent of the assembly, metres in the file, millimetres here.
+    assert.deepEqual(result.boundingBoxMm, [-10, 0, 0, 20, 30, 100]);
   });
 
   it('says so when a document has no component tree', () => {

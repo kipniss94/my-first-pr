@@ -9,6 +9,8 @@ export interface JobInput {
   fileName: string;
   size: number;
   expiresAt: string;
+  /** For an assembly component: the part configurations the assembly uses. */
+  configurations?: string[];
 }
 
 type Runner = (job: JobRecord, report: ProgressReporter) => Promise<JobResult>;

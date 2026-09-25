@@ -339,6 +339,8 @@ export interface AssemblyComponent {
   /** Job that is preparing this component, once one has been supplied. */
   jobId: string | null;
   fileId: string | null;
+  /** Configurations of this part the assembly uses, so each can be drawn as used. */
+  configurations?: string[];
 }
 
 export interface AssemblyState {

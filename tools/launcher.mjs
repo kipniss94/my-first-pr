@@ -301,8 +301,13 @@ async function startServers() {
     // A local, single-user tool: keep documents for a week, not an hour.
     RETENTION_MINUTES: '10080',
     PROCESSING_TIMEOUT_SECONDS: '600',
-    // Dropping a folder of parts at once is normal here. Still a limit.
-    RATE_LIMIT_UPLOADS: '120',
+    // Dropping a folder of hundreds of parts at once is normal here, and the
+    // only client is this computer's own browser. The browser also waits and
+    // retries when refused, so this only decides how fast a big folder goes.
+    RATE_LIMIT_UPLOADS: '5000',
+    // Every open tab polls its document while it is prepared; a hundred
+    // dropped at once would otherwise run into the public-site limit.
+    RATE_LIMIT_API: '20000',
     NEXT_TELEMETRY_DISABLED: '1',
   };
 

@@ -6,7 +6,8 @@ import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
 import { documentEntries, readAssemblyTree } from '../sldprt/assembly.js';
 import { findBrepSource, meshFromBrep } from '../sldprt/brep-mesh.js';
-import { findModelPartition, findParasolidPartitions, findPreviewPng, type PackageEntry } from '../sldprt/container.js';
+import { findModelPartition, findParasolidPartitions, findPreviewPng, unwrapCodec, type PackageEntry } from '../sldprt/container.js';
+import { isBinaryXt, readXt } from '../sldprt/xt-reader.js';
 import { findDisplayMesh, measureMesh, toIndexedMesh, type IndexedMesh } from '../sldprt/display-list.js';
 import { processOcct, writeNmg } from './cad-occt.js';
 
@@ -40,10 +41,54 @@ function partMesh(entries: PackageEntry[]): IndexedMesh | null {
   const faces = findDisplayMesh(entries);
   if (faces.length > 0) {
     const mesh = toIndexedMesh(faces);
-    if (mesh.triangles > 0) return mesh;
+    if (mesh.triangles > 0) return solidInstead(entries, faces.length)?.mesh ?? mesh;
   }
   const { source } = findBrepSource(entries);
   return source ? (meshFromBrep(source.model)?.mesh ?? null) : null;
+}
+
+/**
+ * The solid of the configuration the part was last shown in — the one its
+ * display mesh was drawn from.
+ */
+function shownSolid(entries: PackageEntry[]) {
+  const current = partConfigurations(entries).find((configuration) => configuration.current);
+  const entry = current ? entries.find((e) => new RegExp(`(^|/)Config-${current.id}-Partition$`).test(e.name)) : undefined;
+  const data = entry ? unwrapCodec(entry.data) : null;
+  if (data && isBinaryXt(data)) {
+    try {
+      return readXt(data);
+    } catch {
+      /* fall back to the partition the B-rep path would use */
+    }
+  }
+  return findBrepSource(entries).source?.model ?? null;
+}
+
+/**
+ * The solid, triangulated, when SolidWorks' stored display mesh is out of date.
+ *
+ * The display mesh is what SolidWorks drew at some save; the partition is the
+ * solid itself, and normally the two have one face for one face. When the
+ * counts differ, the mesh is from an earlier state of the part — a screw drawn
+ * at another size, a plate before its last cut — and in the assemblies it
+ * disagrees with the extent SolidWorks recorded, while the solid agrees. The
+ * solid is only preferred when every one of its faces could be evaluated
+ * exactly: an approximation is not trusted over SolidWorks' own drawing.
+ */
+function solidInstead(entries: PackageEntry[], displayFaces: number): ReturnType<typeof meshFromBrep> {
+  const model = shownSolid(entries);
+  const faces = model?.byType.get(14)?.length ?? 0;
+  if (!model || faces === 0 || faces === displayFaces) return null;
+  let built: ReturnType<typeof meshFromBrep> = null;
+  try {
+    built = meshFromBrep(model);
+  } catch {
+    // The display mesh still opens the part; nothing is lost by keeping it.
+    return null;
+  }
+  if (!built || built.stats.approximated + built.stats.skipped > 0) return null;
+  return built;
 }
 
 /** A mesh moved by a rigid 4×4 placement (column-major, millimetres). */
@@ -91,6 +136,109 @@ async function writePreview(
     };
   }
   return null;
+}
+
+interface PartConfiguration {
+  name: string;
+  /** `N` of `Contents/Config-N-Partition`. */
+  id: number;
+  current: boolean;
+}
+
+/** The configurations a part keeps, as its own XML lists them. */
+function partConfigurations(entries: PackageEntry[]): PartConfiguration[] {
+  for (const entry of entries.filter((e) => /(^|\/)swXmlContents\//.test(e.name))) {
+    const data = /__ZLB$/.test(entry.name) ? unwrapCodec(entry.data) : entry.data;
+    const xml = data?.toString('utf8') ?? '';
+    const list: PartConfiguration[] = [];
+    for (const match of xml.matchAll(/<swConfiguration\s[^>]*>/g)) {
+      const attribute = (name: string) =>
+        new RegExp(`\\b${name}="([^"]*)"`)
+          .exec(match[0])?.[1]
+          .replace(/&quot;/g, '"')
+          .replace(/&apos;/g, "'")
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&');
+      const id = Number(attribute('swID'));
+      const name = attribute('swName');
+      if (name !== undefined && Number.isInteger(id)) list.push({ name, id, current: attribute('swMostRecentConfiguration') === 'YES' });
+    }
+    if (list.length > 0) return list;
+  }
+  return [];
+}
+
+/**
+ * Meshes for the configurations an assembly uses, beside the one drawn.
+ *
+ * A part keeps one display mesh — for the configuration it was last shown in —
+ * but the solid of every configuration it has built, one partition each. When
+ * an assembly uses another one (a screw of another length, a spring
+ * compressed), that solid is triangulated and written as `config-N`. The map
+ * says, per configuration name, which manifest to draw: `null` for the main
+ * one, absent when the file does not hold that configuration at all.
+ */
+async function configurationMeshes(
+  ctx: ProcessorContext,
+  entries: PackageEntry[],
+  mainId: number | null,
+): Promise<{ map: Record<string, string | null>; unavailable: string[] }> {
+  const { request } = ctx;
+  const wanted = [...new Set(request.options.configurations ?? [])];
+  const map: Record<string, string | null> = {};
+  const unavailable: string[] = [];
+  if (wanted.length === 0) return { map, unavailable };
+  const configurations = partConfigurations(entries);
+  const main = mainId ?? configurations.find((c) => c.current)?.id ?? null;
+  for (const name of wanted) {
+    const configuration = configurations.find((c) => c.name === name) ?? configurations.find((c) => c.name.toLowerCase() === name.toLowerCase());
+    if (!configuration) {
+      // A single-configuration part, or an unnamed one: what is drawn is it.
+      if (configurations.length <= 1) map[name] = null;
+      else unavailable.push(name);
+      continue;
+    }
+    if (configuration.id === main) {
+      map[name] = null;
+      continue;
+    }
+    const partition = entries.find((e) => new RegExp(`(^|/)Config-${configuration.id}-Partition$`).test(e.name));
+    const data = partition ? unwrapCodec(partition.data) : null;
+    let built: ReturnType<typeof meshFromBrep> = null;
+    try {
+      built = data ? meshFromBrep(readXt(data)) : null;
+    } catch {
+      built = null;
+    }
+    if (!built) {
+      unavailable.push(name);
+      continue;
+    }
+    const base = `config-${configuration.id}`;
+    await writeNmg(
+      {
+        success: true,
+        root: { name, meshes: [0], children: [] },
+        meshes: [
+          {
+            name,
+            attributes: { position: { array: built.mesh.positions }, normal: { array: built.mesh.normals } },
+            index: { array: built.mesh.indices },
+            brep_faces: built.mesh.faceRanges.map((range) => ({ ...range, color: null })),
+          },
+        ],
+      },
+      request.assetsDir,
+      request.size,
+      ctx,
+      `SolidWorks B-rep (Parasolid) of configuration "${name}", triangulated by DocuView`,
+      base,
+    );
+    map[name] = `/api/v1/files/${request.fileId}/assets/${base}.nmg.json`;
+  }
+  if (unavailable.length > 0) ctx.log('warn', `configurations not kept in the file: ${unavailable.join(', ')}`);
+  return { map, unavailable };
 }
 
 /** Beyond this, components saved inside an assembly are listed rather than drawn. */
@@ -188,12 +336,14 @@ async function processAssembly(
   /* ------------------------- components in own files ----------------------- */
   const external = tree.instances.filter((instance) => !instance.virtual);
   const componentNames: string[] = [];
-  const seen = new Set<string>();
+  const componentConfigurations: Record<string, string[]> = {};
   for (const instance of external) {
     const key = instance.component.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    componentNames.push(instance.component);
+    if (!componentConfigurations[key]) {
+      componentConfigurations[key] = [];
+      componentNames.push(instance.component);
+    }
+    if (!componentConfigurations[key].includes(instance.configuration)) componentConfigurations[key].push(instance.configuration);
   }
   if (tree.unexpanded.length > 0) {
     warnings.push(`${tree.unexpanded.length} sub-assembly reference(s) carry no placements of their own and are not shown.`);
@@ -231,7 +381,11 @@ async function processAssembly(
       hasPreview: Boolean(previewAsset),
       componentCount: componentNames.length,
       componentNames,
+      componentConfigurations,
       instances: tree.instances.length,
+      referencedFiles: tree.files,
+      unexpandedAssemblies: tree.unexpanded,
+      boundingBoxMm: tree.boundingBoxMm,
       instancesInside: drawnInside,
       instancesInFiles: external.length,
       suppressed: tree.suppressed,
@@ -328,7 +482,32 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
   if (faces.length > 0) {
     const mesh = toIndexedMesh(faces);
     if (mesh.triangles > 0) {
-      return drawMesh(mesh, faces.length, 'SolidWorks display mesh, read from the file', { meshSource: 'display' }, []);
+      const configurations = await configurationMeshes(ctx, entries, null);
+      const solid = solidInstead(entries, faces.length);
+      if (solid) {
+        ctx.log('info', `display mesh has ${faces.length} faces but the solid ${solid.stats.faces}: drawing the solid`);
+        return drawMesh(
+          solid.mesh,
+          solid.stats.faces,
+          'SolidWorks B-rep (Parasolid), triangulated by DocuView',
+          {
+            meshSource: 'b-rep',
+            staleDisplayMesh: true,
+            configurations: configurations.map,
+            unavailableConfigurations: configurations.unavailable,
+          },
+          [
+            `The picture SolidWorks stored in this file is from an earlier state of the part (${faces.length} faces; the part has ${solid.stats.faces}), so it is drawn from its exact geometry instead.`,
+          ],
+        );
+      }
+      return drawMesh(
+        mesh,
+        faces.length,
+        'SolidWorks display mesh, read from the file',
+        { meshSource: 'display', configurations: configurations.map, unavailableConfigurations: configurations.unavailable },
+        [],
+      );
     }
   }
 
@@ -357,7 +536,14 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
         built.mesh,
         stats.faces,
         'SolidWorks B-rep (Parasolid), triangulated by DocuView',
-        { meshSource: 'b-rep', approximatedFaces: stats.approximated + stats.skipped },
+        {
+          meshSource: 'b-rep',
+          approximatedFaces: stats.approximated + stats.skipped,
+          ...(await configurationMeshes(ctx, entries, Number(/Config-(\d+)-/.exec(brep.name)?.[1] ?? 0)).then((c) => ({
+            configurations: c.map,
+            unavailableConfigurations: c.unavailable,
+          }))),
+        },
         warnings,
       );
     }
