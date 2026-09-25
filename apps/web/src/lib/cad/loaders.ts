@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { AssemblyPlacement, NmgManifest } from '@docuview/shared';
-import { apiUrl, fetchWithProgress } from '@/lib/api';
+import { fetchApi, fetchWithProgress } from '@/lib/api';
 import type { CadModel, CadPart, CadTreeNode } from './types';
 
 /** Neutral engineering grey used whenever the file carries no colour. */
@@ -26,7 +26,7 @@ export async function loadNmg(
   signal?: AbortSignal,
 ): Promise<CadModel> {
   onProgress?.(5);
-  const manifestResponse = await fetch(apiUrl(source), { signal });
+  const manifestResponse = await fetchApi(source, { signal });
   if (!manifestResponse.ok) throw new Error('Could not load the prepared geometry.');
   const manifest = (await manifestResponse.json()) as NmgManifest;
 
@@ -345,6 +345,8 @@ export interface MergeSource {
   /** Label for the tree node this model hangs under. */
   name: string;
   model: CadModel;
+  /** For a part drawn in one of its configurations rather than as last saved. */
+  configuration?: string;
 }
 
 /**
@@ -524,10 +526,17 @@ export function placeModels(
     warnings.push(...primary.warnings);
   }
 
-  const models = new Map(components.map((source) => [source.name.toLowerCase(), source.model]));
+  // A part used in several configurations brings one model per configuration;
+  // each occurrence takes the one it was placed as, else the part as saved.
+  const models = new Map<string, CadModel>();
+  for (const source of components) {
+    const name = source.name.toLowerCase();
+    models.set(source.configuration === undefined ? name : `${name}|${source.configuration}`, source.model);
+  }
   const matrix = new THREE.Matrix4();
   placements.forEach((placement, index) => {
-    const model = models.get(placement.component.toLowerCase());
+    const name = placement.component.toLowerCase();
+    const model = models.get(`${name}|${placement.configuration}`) ?? models.get(name);
     if (!model) return;
     const copy = model.root.clone(true);
     // Pair each original mesh with its copy: clone() keeps traversal order.

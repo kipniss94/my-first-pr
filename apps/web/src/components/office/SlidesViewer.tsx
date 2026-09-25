@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { SlideDocument } from '@docuview/shared';
-import { apiUrl } from '@/lib/api';
+import { fetchApi } from '@/lib/api';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
 import { ViewerAdRail } from '@/components/site/AdSlot';
@@ -45,7 +45,7 @@ export function SlidesViewer({ source, meta, onProgress, onReady }: SlidesViewer
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(apiUrl(source));
+        const response = await fetchApi(source);
         if (!response.ok) throw new Error(`http ${response.status}`);
         const parsed = (await response.json()) as SlideDocument;
         if (cancelled) return;

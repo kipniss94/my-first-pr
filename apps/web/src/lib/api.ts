@@ -39,10 +39,36 @@ async function readError(response: Response): Promise<JobError> {
   };
 }
 
+/**
+ * Many documents open at once all poll, and a folder of parts is many uploads:
+ * the server's request limits are reachable in normal use. A refused request
+ * waits for the window the server names and goes again, this many times,
+ * rather than turning into "we couldn't reach the service".
+ */
+const RATE_LIMIT_RETRIES = 30;
+
+/** Milliseconds until the server takes requests again, from its rate-limit headers. */
+function retryDelay(header: (name: string) => string | null): number {
+  const reset = /reset=(\d+)/.exec(header('RateLimit') ?? '')?.[1] ?? header('Retry-After');
+  const seconds = Number(reset);
+  return Math.min(60, Math.max(1, Number.isFinite(seconds) && seconds > 0 ? seconds : 5)) * 1000 + 250;
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** `fetch` for anything the API serves, waiting out its rate limit. */
+export async function fetchApi(pathOrUrl: string, init?: RequestInit): Promise<Response> {
+  for (let tries = 0; ; tries += 1) {
+    const response = await fetch(apiUrl(pathOrUrl), init);
+    if (response.status !== 429 || tries >= RATE_LIMIT_RETRIES || init?.signal?.aborted) return response;
+    await pause(retryDelay((name) => response.headers.get(name)));
+  }
+}
+
 async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(apiUrl(path), { ...init, headers: { Accept: 'application/json', ...init?.headers } });
+    response = await fetchApi(path, { ...init, headers: { Accept: 'application/json', ...init?.headers } });
   } catch {
     throw new ApiError(GENERIC_ERROR);
   }
@@ -97,58 +123,91 @@ export function uploadFile(file: File, onProgress: (loaded: number, total: numbe
   return uploadTo('/api/v1/uploads', file, onProgress);
 }
 
+const CANCELLED: JobError = { code: 'cancelled', message: 'Upload cancelled.', retryable: true };
+
 function uploadTo(path: string, file: File, onProgress: (loaded: number, total: number) => void): UploadHandle {
-  const xhr = new XMLHttpRequest();
-  const promise = new Promise<UploadResponse>((resolve, reject) => {
-    const form = new FormData();
-    form.append('file', file, file.name);
+  let xhr: XMLHttpRequest | null = null;
+  let aborted = false;
+  let wake: (() => void) | null = null;
 
-    xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable) onProgress(event.loaded, event.total);
-    });
+  const attempt = () =>
+    new Promise<{ status: number; body: unknown; delay: number }>((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      xhr = request;
+      const form = new FormData();
+      form.append('file', file, file.name);
 
-    xhr.addEventListener('load', () => {
-      let body: unknown;
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        reject(new ApiError(GENERIC_ERROR, xhr.status));
-        return;
-      }
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve(body as UploadResponse);
-      } else {
-        const error = (body as { error?: JobError }).error;
+      request.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) onProgress(event.loaded, event.total);
+      });
+
+      request.addEventListener('load', () => {
+        // A refusal is retried whatever its body says — a proxy in between
+        // may answer it in plain text.
+        if (request.status === 429) {
+          resolve({ status: 429, body: null, delay: retryDelay((name) => request.getResponseHeader(name)) });
+          return;
+        }
+        let body: unknown;
+        try {
+          body = JSON.parse(request.responseText);
+        } catch {
+          reject(new ApiError(GENERIC_ERROR, request.status));
+          return;
+        }
+        resolve({ status: request.status, body, delay: 0 });
+      });
+
+      request.addEventListener('error', () => reject(new ApiError(GENERIC_ERROR, request.status)));
+      request.addEventListener('timeout', () =>
         reject(
-          new ApiError(
-            error ?? { code: `http_${xhr.status}`, message: "We couldn't upload this file.", retryable: true },
-            xhr.status,
-          ),
-        );
-      }
+          new ApiError({
+            code: 'upload_timeout',
+            message: 'The upload timed out.',
+            hint: 'Check your connection and try again.',
+            retryable: true,
+          }),
+        ),
+      );
+      request.addEventListener('abort', () => reject(new ApiError(CANCELLED)));
+
+      request.open('POST', apiUrl(path));
+      request.responseType = 'text';
+      request.send(form);
     });
 
-    xhr.addEventListener('error', () => reject(new ApiError(GENERIC_ERROR, xhr.status)));
-    xhr.addEventListener('timeout', () =>
-      reject(
-        new ApiError({
-          code: 'upload_timeout',
-          message: 'The upload timed out.',
-          hint: 'Check your connection and try again.',
-          retryable: true,
-        }),
-      ),
-    );
-    xhr.addEventListener('abort', () =>
-      reject(new ApiError({ code: 'cancelled', message: 'Upload cancelled.', retryable: true })),
-    );
+  const promise = (async (): Promise<UploadResponse> => {
+    for (let tries = 0; ; tries += 1) {
+      if (aborted) throw new ApiError(CANCELLED);
+      const outcome = await attempt();
+      if (outcome.status >= 200 && outcome.status < 300) return outcome.body as UploadResponse;
+      if (outcome.status === 429 && tries < RATE_LIMIT_RETRIES) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, outcome.delay);
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+        wake = null;
+        continue;
+      }
+      const error = (outcome.body as { error?: JobError } | null)?.error;
+      throw new ApiError(
+        error ?? { code: `http_${outcome.status}`, message: "We couldn't upload this file.", retryable: true },
+        outcome.status,
+      );
+    }
+  })();
 
-    xhr.open('POST', apiUrl(path));
-    xhr.responseType = 'text';
-    xhr.send(form);
-  });
-
-  return { promise, abort: () => xhr.abort() };
+  return {
+    promise,
+    abort: () => {
+      aborted = true;
+      (xhr as XMLHttpRequest | null)?.abort();
+      (wake as (() => void) | null)?.();
+    },
+  };
 }
 
 /** Fetch a binary asset with coarse progress, used by the CAD and PDF loaders. */
@@ -157,7 +216,7 @@ export async function fetchWithProgress(
   onProgress?: (loaded: number, total: number) => void,
   signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
-  const response = await fetch(apiUrl(url), { signal });
+  const response = await fetchApi(url, { signal });
   if (!response.ok) throw new ApiError(await readError(response), response.status);
 
   const total = Number(response.headers.get('content-length') ?? 0);

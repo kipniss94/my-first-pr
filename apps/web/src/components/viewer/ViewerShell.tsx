@@ -3,15 +3,16 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { JobState } from '@docuview/shared';
 import { apiUrl, deleteFile } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
-import { cancelSession, forgetSession, markViewerStage, type Session } from '@/lib/session';
+import { cancelSession, forgetSession, markViewerStage, refreshSession, type Session } from '@/lib/session';
 import { removeDocument, setThumbnail } from '@/lib/cache';
 import { Logo } from '@/components/site/SiteChrome';
 import { ErrorPanel, WarningList } from './ErrorPanel';
 import { StageRail } from './StageRail';
+import { OpenReportBanner, ViewerTabs } from './ViewerTabs';
 
 /**
  * Viewers are loaded on demand. three.js and PDF.js together are several
@@ -50,8 +51,15 @@ export function ViewerShell({ session }: { session: Session }) {
   const job = session.job;
   const result = job?.result ?? null;
 
+  // An assembly may have gained components while its tab was in the background.
+  const isAssembly = Boolean(job?.assembly);
+  useEffect(() => {
+    if (isAssembly) void refreshSession(session.id);
+  }, [isAssembly, session.id]);
+
   const onCancel = useCallback(() => {
     cancelSession(session.id);
+    forgetSession(session.id);
     router.push('/');
   }, [router, session.id]);
 
@@ -94,6 +102,8 @@ export function ViewerShell({ session }: { session: Session }) {
         onDelete={onDelete}
         deleting={deleting}
       />
+      <ViewerTabs currentId={session.id} />
+      <OpenReportBanner />
 
       {result && !dismissedWarnings && (
         <WarningList warnings={result.warnings} onDismiss={() => setDismissedWarnings(true)} />

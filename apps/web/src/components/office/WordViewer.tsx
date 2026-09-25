@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { apiUrl } from '@/lib/api';
+import { fetchApi } from '@/lib/api';
 import { formatCount } from '@/lib/format';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
@@ -33,7 +33,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(apiUrl(source));
+        const response = await fetchApi(source);
         if (!response.ok) throw new Error(`http ${response.status}`);
         // Served as text/plain on purpose: the browser must never execute this
         // markup by navigating to the asset URL directly.

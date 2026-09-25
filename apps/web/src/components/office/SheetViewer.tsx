@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SheetCell, SheetData, SheetDocument } from '@docuview/shared';
-import { apiUrl } from '@/lib/api';
+import { fetchApi } from '@/lib/api';
 import { formatCount } from '@/lib/format';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
@@ -33,7 +33,7 @@ export function SheetViewer({ source, meta, fileId, onReady }: SheetViewerProps)
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(apiUrl(source));
+        const response = await fetchApi(source);
         if (!response.ok) throw new Error(`http ${response.status}`);
         const parsed = (await response.json()) as SheetDocument;
         if (cancelled) return;

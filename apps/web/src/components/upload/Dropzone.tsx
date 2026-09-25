@@ -5,15 +5,9 @@ import { useRouter } from 'next/navigation';
 import { ACCEPTED_EXTENSIONS, type CapabilitiesResponse } from '@docuview/shared';
 import { getCapabilities } from '@/lib/api';
 import { formatBytes, formatDuration } from '@/lib/format';
-import { startUpload } from '@/lib/session';
+import { droppedFiles, FALLBACK_MAX_BYTES, openFiles } from '@/lib/open';
 
 const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.join(',');
-const FALLBACK_MAX_BYTES = 250 * 1024 * 1024;
-
-function extensionOf(name: string): string {
-  const match = /\.([A-Za-z0-9_]{1,12})$/.exec(name);
-  return match ? match[1].toLowerCase() : '';
-}
 
 export function Dropzone({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
@@ -42,32 +36,24 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
   const maxBytes = capabilities?.maxUploadBytes ?? FALLBACK_MAX_BYTES;
 
   const accept = useCallback(
-    (file: File | undefined) => {
-      if (!file) return;
+    async (files: File[], fromFolder = false) => {
+      if (files.length === 0) return;
       setError(null);
-
-      if (file.size === 0) {
-        setError({ message: 'That file is empty.', hint: 'Pick a file that has content in it.' });
-        return;
-      }
-      if (file.size > maxBytes) {
-        setError({
-          message: `That file is ${formatBytes(file.size)}, which is over the ${formatBytes(maxBytes)} limit.`,
-          hint: 'Try a compressed or simplified export.',
-        });
-        return;
-      }
-      const extension = extensionOf(file.name);
-      if (extension && !ACCEPTED_EXTENSIONS.includes(`.${extension}`)) {
-        setError({
-          message: `We don't support ".${extension}" files.`,
-          hint: 'The supported formats are listed below.',
-        });
-        return;
-      }
-
-      const sessionId = startUpload(file);
-      router.push(`/viewer?s=${sessionId}`);
+      const outcome = await openFiles(files, {
+        maxBytes,
+        fromFolder,
+        navigate: (sessionId, replace) =>
+          replace ? router.replace(`/viewer?s=${sessionId}`) : router.push(`/viewer?s=${sessionId}`),
+      });
+      if (outcome.opened.length > 0 || outcome.refused.length === 0) return;
+      setError(
+        outcome.refused.length === 1
+          ? outcome.refused[0]
+          : {
+              message: `None of the ${outcome.refused.length} files could be opened.`,
+              hint: outcome.refused.map((r) => r.message).join(' '),
+            },
+      );
     },
     [maxBytes, router],
   );
@@ -77,13 +63,7 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
       event.preventDefault();
       dragDepth.current = 0;
       setDragging(false);
-      const items = event.dataTransfer?.files;
-      if (!items || items.length === 0) return;
-      if (items.length > 1) {
-        setError({ message: 'One file at a time, please.', hint: 'Drop a single document to open it.' });
-        return;
-      }
-      accept(items[0]);
+      void droppedFiles(event.dataTransfer).then(({ files, fromFolder }) => accept(files, fromFolder));
     },
     [accept],
   );
@@ -155,10 +135,11 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
           ref={inputRef}
           type="file"
           accept={ACCEPT_ATTRIBUTE}
+          multiple
           className="sr-only"
           data-testid="file-input"
           onChange={(event) => {
-            accept(event.target.files?.[0]);
+            void accept(Array.from(event.target.files ?? []));
             event.target.value = '';
           }}
         />

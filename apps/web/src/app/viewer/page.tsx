@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { attachToJob, getSession, useSession } from '@/lib/session';
 import { ViewerShell } from '@/components/viewer/ViewerShell';
+import { useViewerDrop, ViewerDropHint } from '@/components/viewer/ViewerTabs';
 import { Dropzone } from '@/components/upload/Dropzone';
 import { Logo } from '@/components/site/SiteChrome';
 
@@ -49,6 +50,8 @@ function ViewerRoute() {
   }, [jobParam, sessionParam]);
 
   const session = useSession(sessionId);
+  // Whatever is on screen — a model, an error, nothing — a drop opens more.
+  const dragging = useViewerDrop();
 
   // Keep a shareable, reload-safe URL and drop the stale in-memory id.
   useEffect(() => {
@@ -60,10 +63,24 @@ function ViewerRoute() {
     window.history.replaceState(null, '', url.toString());
   }, [session?.jobId]);
 
-  if (resolved && !sessionId) return <EmptyState />;
+  const hint = dragging ? <ViewerDropHint /> : null;
+  if (resolved && !sessionId) {
+    return (
+      <>
+        <EmptyState />
+        {hint}
+      </>
+    );
+  }
   if (!session) return <Booting />;
 
-  return <ViewerShell session={session} />;
+  // Keyed: each document gets its own viewer state, never the previous tab's.
+  return (
+    <>
+      <ViewerShell key={session.id} session={session} />
+      {hint}
+    </>
+  );
 }
 
 function Booting() {

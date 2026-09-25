@@ -33,6 +33,11 @@ export interface RenderableComponent {
   source: string;
   mode: 'nmg' | 'mesh';
   formatId: string;
+  /**
+   * Geometry of the other configurations the assembly uses, by name. The part
+   * as saved is `source`; a configuration missing here is drawn as that.
+   */
+  configurations: Record<string, string>;
 }
 
 const POLL_INTERVAL_MS = 400;
@@ -70,12 +75,39 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
     };
   }, []);
 
-  // Re-seed when a different document is opened, but never clobber components
-  // the user has already supplied in this session.
-  const signature = assembly?.components.map((c) => c.name).join('|') ?? '';
+  // Take in what the server knows — components sent from elsewhere (files
+  // dropped on the window, another tab) — without clobbering the ones this
+  // panel is sending or has already opened.
+  const signature = assembly?.components.map((c) => `${c.name}:${c.jobId ?? ''}`).join('|') ?? '';
   useEffect(() => {
-    setComponents((current) => (current.length > 0 ? current : seed(assembly)));
-    // `signature` stands in for the assembly identity; `assembly` itself is a
+    setComponents((current) => {
+      if (current.length === 0) return seed(assembly);
+      if (!assembly) return current;
+      let changed = false;
+      const next = current.map((local) => {
+        const remote = assembly.components.find((c) => c.name.toLowerCase() === local.name.toLowerCase());
+        const newer = remote?.jobId && remote.jobId !== local.jobId && (local.status === 'missing' || local.status === 'failed');
+        if (!remote || !newer) return local;
+        changed = true;
+        // Pending until its own job says otherwise; a ready one is fetched.
+        return {
+          ...local,
+          status: remote.status === 'ready' ? ('ready' as const) : ('pending' as const),
+          jobId: remote.jobId,
+          fileId: remote.fileId,
+          uploaded: 100,
+          result: null,
+          error: null,
+        };
+      });
+      for (const remote of assembly.components) {
+        if (current.some((local) => local.name.toLowerCase() === remote.name.toLowerCase())) continue;
+        next.push(...seed({ ...assembly, components: [remote] }));
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+    // `signature` stands in for the assembly's content; `assembly` itself is a
     // fresh object on every poll and would restart this on each tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signature]);
@@ -87,6 +119,11 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
   }, []);
 
   /* ------------------------- watch component jobs ------------------------- */
+
+  // A folder of parts is dozens of jobs at once; each asks less often then, so
+  // together they stay within what the server answers.
+  const preparing = useRef(0);
+  preparing.current = components.filter((c) => c.status === 'pending').length;
 
   useEffect(() => {
     const schedule = (run: () => void, ms: number) => {
@@ -134,7 +171,7 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
           });
           return;
         }
-        schedule(() => void tick(), POLL_INTERVAL_MS);
+        schedule(() => void tick(), POLL_INTERVAL_MS * Math.max(1, Math.ceil(preparing.current / 4)));
       };
 
       schedule(() => void tick(), 0);
@@ -210,12 +247,20 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
       const result = component.result;
       if (component.status !== 'ready' || !result) continue;
       if (result.viewer !== 'cad-nmg' && result.viewer !== 'cad-mesh') continue;
+      const configurations: Record<string, string> = {};
+      const listed = result.meta.configurations;
+      if (listed && typeof listed === 'object') {
+        for (const [name, url] of Object.entries(listed as Record<string, unknown>)) {
+          if (typeof url === 'string') configurations[name] = url;
+        }
+      }
       sources.push({
         id: component.jobId ?? component.name,
         name: component.name,
         source: result.source,
         mode: result.viewer === 'cad-nmg' ? 'nmg' : 'mesh',
         formatId: typeof result.meta.formatId === 'string' ? result.meta.formatId : 'stl',
+        configurations,
       });
     }
     return sources;

@@ -7,7 +7,8 @@ import { ACCEPTED_EXTENSIONS, type CapabilitiesResponse } from '@docuview/shared
 import { getCapabilities } from '@/lib/api';
 import { clearDocuments, removeDocument, useCachedDocuments, type CachedDocument } from '@/lib/cache';
 import { formatBytes, formatDuration } from '@/lib/format';
-import { openCachedDocument, startUpload } from '@/lib/session';
+import { droppedFiles, FALLBACK_MAX_BYTES, openFiles } from '@/lib/open';
+import { openCachedDocument } from '@/lib/session';
 import { AdSlot } from '@/components/site/AdSlot';
 import { Logo } from '@/components/site/SiteChrome';
 import { DocumentCard } from './DocumentCard';
@@ -23,11 +24,6 @@ import { DocumentCard } from './DocumentCard';
  */
 
 const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.join(',');
-const FALLBACK_MAX_BYTES = 250 * 1024 * 1024;
-
-function extensionOf(name: string): string {
-  return /\.([A-Za-z0-9_]{1,12})$/.exec(name)?.[1].toLowerCase() ?? '';
-}
 
 export function Workspace() {
   const router = useRouter();
@@ -57,32 +53,27 @@ export function Workspace() {
 
   /* ------------------------------ opening -------------------------------- */
 
-  const openFile = useCallback(
-    (file: File | undefined) => {
-      if (!file) return;
+  // Any number of files, a folder too: each opens in its own tab, and an
+  // assembly takes the parts it is made of instead (see lib/open).
+  const openMany = useCallback(
+    async (files: File[], fromFolder = false) => {
+      if (files.length === 0) return;
       setError(null);
-
-      if (file.size === 0) {
-        setError({ message: `“${file.name}” is empty.`, hint: 'Pick a file that has content in it.' });
-        return;
-      }
-      if (file.size > maxBytes) {
-        setError({
-          message: `“${file.name}” is ${formatBytes(file.size)}, over the ${formatBytes(maxBytes)} limit.`,
-          hint: 'Try a compressed or simplified export.',
-        });
-        return;
-      }
-      const extension = extensionOf(file.name);
-      if (extension && !ACCEPTED_EXTENSIONS.includes(`.${extension}`)) {
-        setError({
-          message: `We can’t open “.${extension}” files yet.`,
-          hint: 'CAD, 3D, PDF, Office and image formats are supported.',
-        });
-        return;
-      }
-
-      router.push(`/viewer?s=${startUpload(file)}`);
+      const outcome = await openFiles(files, {
+        maxBytes,
+        fromFolder,
+        navigate: (sessionId, replace) =>
+          replace ? router.replace(`/viewer?s=${sessionId}`) : router.push(`/viewer?s=${sessionId}`),
+      });
+      if (outcome.opened.length > 0 || outcome.refused.length === 0) return;
+      setError(
+        outcome.refused.length === 1
+          ? outcome.refused[0]
+          : {
+              message: `None of the ${outcome.refused.length} files could be opened.`,
+              hint: outcome.refused.map((r) => r.message).join(' '),
+            },
+      );
     },
     [maxBytes, router],
   );
@@ -129,16 +120,7 @@ export function Workspace() {
       event.preventDefault();
       dragDepth.current = 0;
       setDragging(false);
-      const files = event.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-      if (files.length > 1) {
-        setError({
-          message: 'One document at a time, please.',
-          hint: 'Assembly components are added from inside the viewer once the assembly is open.',
-        });
-        return;
-      }
-      openFile(files[0]);
+      void droppedFiles(event.dataTransfer).then(({ files, fromFolder }) => openMany(files, fromFolder));
     };
 
     window.addEventListener('dragenter', onDragEnter);
@@ -151,7 +133,7 @@ export function Workspace() {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [openFile]);
+  }, [openMany]);
 
   /* -------------------------------- view ---------------------------------- */
 
@@ -313,10 +295,11 @@ export function Workspace() {
         ref={inputRef}
         type="file"
         accept={ACCEPT_ATTRIBUTE}
+        multiple
         className="sr-only"
         data-testid="file-input"
         onChange={(event) => {
-          openFile(event.target.files?.[0]);
+          void openMany(Array.from(event.target.files ?? []));
           event.target.value = '';
         }}
       />
@@ -362,7 +345,7 @@ function DropOverlay() {
     >
       <div className="rounded-2xl border-2 border-dashed border-accent bg-ink-900/90 px-12 py-10 text-center">
         <p className="text-lg font-semibold text-mist-100">Drop to open</p>
-        <p className="mt-1 text-sm text-mist-400">We’ll work out what it is.</p>
+        <p className="mt-1 text-sm text-mist-400">One file or many. An assembly takes its parts along.</p>
       </div>
     </div>
   );

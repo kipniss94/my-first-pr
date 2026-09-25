@@ -166,7 +166,7 @@ export function CadViewer({
     };
 
     const formatId = typeof meta.formatId === 'string' ? meta.formatId : 'stl';
-    const wanted: { key: string; name: string; load: () => Promise<CadModel> }[] = [];
+    const wanted: { key: string; name: string; configuration?: string; load: () => Promise<CadModel> }[] = [];
 
     if (source) {
       wanted.push({
@@ -187,6 +187,14 @@ export function CadViewer({
             ? loadNmg(component.source, undefined, controller.signal)
             : loadMeshFile(component.source, component.formatId, component.name, undefined, controller.signal),
       });
+      for (const [configuration, url] of Object.entries(component.configurations ?? {})) {
+        wanted.push({
+          key: `component:${component.id}:${configuration}`,
+          name: component.name,
+          configuration,
+          load: () => loadNmg(url, undefined, controller.signal),
+        });
+      }
     }
 
     if (wanted.length === 0) {
@@ -212,9 +220,10 @@ export function CadViewer({
           cache.set(entry.key, model);
           loadedAny = true;
         }
-        sources.push({ name: entry.name, model });
         if (entry.key.startsWith('primary:')) primary = model;
-        else parts.push({ name: entry.name, model });
+        else parts.push({ name: entry.name, model, configuration: entry.configuration });
+        // Laid out side by side, a part shows once, as saved.
+        if (entry.configuration === undefined) sources.push({ name: entry.name, model });
       }
 
       // Drop anything that is no longer part of the document.
