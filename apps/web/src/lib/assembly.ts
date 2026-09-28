@@ -1,8 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AssemblyState, ComponentStatus, JobError, JobResult, JobState } from '@docuview/shared';
+import { bestLocated, type AssemblyState, type ComponentStatus, type JobError, type JobResult, type JobState } from '@docuview/shared';
 import { ApiError, getJob, uploadComponent } from './api';
+import { pathOf, recordedLocation } from './open';
 
 /**
  * Component resolution for an assembly, on the browser side.
@@ -24,6 +25,14 @@ export interface ComponentView {
   /** Set once the component's job finished; this is what the scene loads. */
   result: JobResult | null;
   error: JobError | null;
+  /** Where SolidWorks had the file when the assembly was saved. */
+  originalPath: string | null;
+}
+
+/** Where the assembly itself was: recorded by SolidWorks, and inside what was dropped. */
+export interface AssemblyPlace {
+  recorded: string | null;
+  here: string | null;
 }
 
 /** A component whose geometry can actually go into the 3D scene. */
@@ -52,10 +61,15 @@ function seed(assembly: AssemblyState | null): ComponentView[] {
     uploaded: component.status === 'missing' ? 0 : 100,
     result: null,
     error: null,
+    originalPath: component.originalPath ?? null,
   }));
 }
 
-export function useAssembly(parentJobId: string | null, assembly: AssemblyState | null) {
+export function useAssembly(
+  parentJobId: string | null,
+  assembly: AssemblyState | null,
+  place: AssemblyPlace = { recorded: null, here: null },
+) {
   const [components, setComponents] = useState<ComponentView[]>(() => seed(assembly));
   const [rejected, setRejected] = useState<{ name: string; message: string } | null>(null);
   const watched = useRef(new Set<string>());
@@ -186,16 +200,20 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
       setRejected(null);
 
       // A whole folder can be dropped: send only the files the assembly asks
-      // for, once each, and none it already has. A file it does not name is
-      // sent only when nothing else matched — the user may know better.
-      const state = new Map(components.map((c) => [c.name.toLowerCase(), c.status]));
-      const seen = new Set<string>();
-      const named = files.filter((file) => {
+      // for, once each, and none it already has. Of two files with the same
+      // name the one where the assembly had it is taken. A file it does not
+      // name is sent only when nothing else matched — the user may know better.
+      const state = new Map(components.map((c) => [c.name.toLowerCase(), c]));
+      const copies = new Map<string, File[]>();
+      for (const file of files) {
         const key = file.name.toLowerCase();
-        if (!state.has(key) || seen.has(key)) return false;
-        seen.add(key);
-        const status = state.get(key);
-        return status === 'missing' || status === 'failed';
+        const component = state.get(key);
+        if (!component || (component.status !== 'missing' && component.status !== 'failed')) continue;
+        copies.set(key, [...(copies.get(key) ?? []), file]);
+      }
+      const named = [...copies.entries()].map(([key, found]) => {
+        const where = recordedLocation(state.get(key)?.originalPath, place.recorded, place.here);
+        return (where ? bestLocated(found, pathOf, where) : undefined) ?? found[0];
       });
       const anyNamed = files.some((file) => state.has(file.name.toLowerCase()));
       const toSend = state.size > 0 && anyNamed ? named : files;
@@ -213,6 +231,7 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
             uploaded: 0,
             result: null,
             error: null,
+            originalPath: index >= 0 ? current[index].originalPath : null,
           };
           if (index < 0) return [...current, entry];
           const next = [...current];
@@ -236,7 +255,7 @@ export function useAssembly(parentJobId: string | null, assembly: AssemblyState 
         }
       }
     },
-    [components, parentJobId, patch],
+    [components, parentJobId, patch, place.here, place.recorded],
   );
 
   /* ---------------------- what the scene can actually show ---------------- */

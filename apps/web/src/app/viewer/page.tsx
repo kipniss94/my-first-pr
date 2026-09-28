@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { attachToJob, getSession, useSession } from '@/lib/session';
+import { attachToJob, getSession, restoreTabs, useSession } from '@/lib/session';
 import { ViewerShell } from '@/components/viewer/ViewerShell';
 import { useViewerDrop, ViewerDropHint } from '@/components/viewer/ViewerTabs';
 import { Dropzone } from '@/components/upload/Dropzone';
@@ -35,6 +35,9 @@ function ViewerRoute() {
    * wrong leaves the page stuck on "Opening…" forever.
    */
   useEffect(() => {
+    // After a reload the store is empty: bring back this tab's documents first,
+    // so the one in the address bar takes its place among them.
+    restoreTabs();
     if (sessionParam && getSession(sessionParam)) {
       setSessionId(sessionParam);
       setResolved(true);

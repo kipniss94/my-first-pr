@@ -74,8 +74,19 @@ function indexParts(dir) {
   return index;
 }
 
-/** The copy of a part nearest the assembly asking for it: same folder, then the closest relative. */
-function locate(index, name, assembly) {
+/**
+ * The copy of a part the assembly means: first the place SolidWorks recorded
+ * for it, walked from where the assembly is now (a library beside the
+ * projects stays beside them); then the copy nearest the assembly.
+ */
+function locate(index, name, assembly, recorded) {
+  if (recorded?.part && recorded.assembly) {
+    const way = path.win32.relative(path.win32.dirname(recorded.assembly), path.win32.dirname(recorded.part));
+    if (!path.win32.isAbsolute(way)) {
+      const expected = path.resolve(path.dirname(assembly), way, name);
+      if (fs.existsSync(expected)) return expected;
+    }
+  }
   const candidates = index.get(name.toLowerCase());
   if (!candidates) return null;
   const home = path.dirname(assembly).toLowerCase().split(path.sep);
@@ -221,7 +232,10 @@ async function classifyAssembly(job, file, index) {
   // Sent as components of this assembly — the viewer's own path, which also
   // builds each part in the configuration the assembly uses.
   for (const name of names) {
-    const found = locate(index, name, file);
+    const found = locate(index, name, file, {
+      assembly: meta.originalPath,
+      part: meta.referencedPaths?.[name.toLowerCase()],
+    });
     if (!found) {
       missing.push(name);
       continue;

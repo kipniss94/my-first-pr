@@ -50,6 +50,10 @@ export interface AssemblyTree {
   files: string[];
   /** Extent of the whole assembly as SolidWorks recorded it, mm: min xyz, max xyz. */
   boundingBoxMm: number[] | null;
+  /** Where SolidWorks recorded this assembly when it was saved. */
+  originalPath: string | null;
+  /** Where it recorded each file below the top, by lower-case file name. */
+  paths: Record<string, string>;
 }
 
 /** The named entries of a SolidWorks document, whichever container holds them. */
@@ -194,6 +198,12 @@ export function readAssemblyTree(entries: PackageEntry[], level = 0): AssemblyTr
     unexpanded: [],
     files: [...files.entries()].filter(([id]) => id !== root.fileRef).map(([, file]) => baseName(file.path)),
     boundingBoxMm: root.boundingBox,
+    originalPath: files.get(root.fileRef)?.path || null,
+    paths: Object.fromEntries(
+      [...files.entries()]
+        .filter(([id, file]) => id !== root.fileRef && file.path)
+        .map(([, file]) => [baseName(file.path).toLowerCase(), file.path]),
+    ),
   };
   const expand = (model: Model, matrix: number[], path: string[], document: PackageEntry[] | null, depth: number) => {
     for (const reference of model.references) {
@@ -236,6 +246,7 @@ export function readAssemblyTree(entries: PackageEntry[], level = 0): AssemblyTr
         tree.suppressed += inner.suppressed;
         tree.hidden += inner.hidden;
         tree.unexpanded.push(...inner.unexpanded);
+        for (const [name, recorded] of Object.entries(inner.paths)) tree.paths[name] ??= recorded;
         continue;
       }
       const inMillimetres = [...placed];

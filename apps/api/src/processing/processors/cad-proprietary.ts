@@ -385,6 +385,10 @@ async function processAssembly(
       instances: tree.instances.length,
       referencedFiles: tree.files,
       unexpandedAssemblies: tree.unexpanded,
+      // Where SolidWorks had the assembly and every file it references: how
+      // the right copy is told apart from another with the same name.
+      originalPath: tree.originalPath,
+      referencedPaths: tree.paths,
       boundingBoxMm: tree.boundingBoxMm,
       instancesInside: drawnInside,
       instancesInFiles: external.length,

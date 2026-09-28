@@ -1,5 +1,9 @@
+import { existsSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { openFixture, watchConsole } from './helpers';
+import { fixture, openFixture, watchConsole } from './helpers';
+
+/** The .docx and .pptx fixtures are written by LibreOffice; without it they do not exist. */
+const needs = (name: string) => test.skip(!existsSync(fixture(name)), `${name} is generated with LibreOffice, which is not installed here`);
 
 test.describe('PDF viewer', () => {
   test('renders pages, navigates and searches', async ({ page }) => {
@@ -67,6 +71,7 @@ test.describe('PDF viewer', () => {
 
 test.describe('Office viewers', () => {
   test('a Word document keeps its headings, list and table', async ({ page }) => {
+    needs('inspection-report.docx');
     const errors = watchConsole(page);
     await openFixture(page, 'inspection-report.docx');
 
@@ -81,6 +86,7 @@ test.describe('Office viewers', () => {
   });
 
   test('the exact page layout can be requested and returns a PDF', async ({ page }) => {
+    needs('inspection-report.docx');
     await openFixture(page, 'inspection-report.docx');
     await page.getByTestId('word-page-layout').click();
 
@@ -109,6 +115,7 @@ test.describe('Office viewers', () => {
   });
 
   test('a presentation renders its slides with an outline rail', async ({ page }) => {
+    needs('pipeline-overview.pptx');
     const errors = watchConsole(page);
     await openFixture(page, 'pipeline-overview.pptx');
 

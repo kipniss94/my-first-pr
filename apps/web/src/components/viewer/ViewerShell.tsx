@@ -156,6 +156,8 @@ export function ViewerShell({ session }: { session: Session }) {
               fileName={session.fileName}
               jobId={session.jobId}
               assembly={job?.assembly ?? null}
+              recordedPath={typeof result.meta.originalPath === 'string' ? result.meta.originalPath : null}
+              sourcePath={session.sourcePath}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}

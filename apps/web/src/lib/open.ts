@@ -1,7 +1,14 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { ACCEPTED_EXTENSIONS, type AssemblyState } from '@docuview/shared';
+import {
+  ACCEPTED_EXTENSIONS,
+  bestLocated,
+  locationScore,
+  type AssemblyComponent,
+  type AssemblyState,
+  type RecordedLocation,
+} from '@docuview/shared';
 import { uploadComponent } from './api';
 import { formatBytes } from './format';
 import {
@@ -56,12 +63,25 @@ export function refusal(file: File, maxBytes: number): { message: string; hint: 
 
 /* ------------------------------ dropped files ------------------------------ */
 
+/** Paths of files that came out of dropped folders; a File does not keep its own. */
+const located = new WeakMap<File, string>();
+
+/**
+ * Where a file was inside what was dropped or picked ("Project/v2/Part.SLDPRT"),
+ * or just its name when it was dropped on its own.
+ */
+export function pathOf(file: File): string {
+  return located.get(file) || file.webkitRelativePath || file.name;
+}
+
 /** Every file under dropped folders, however deep. */
 export async function filesIn(entries: FileSystemEntry[]): Promise<File[]> {
   const files: File[] = [];
   const visit = async (entry: FileSystemEntry): Promise<void> => {
     if (entry.isFile) {
-      files.push(await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject)));
+      const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+      located.set(file, entry.fullPath.replace(/^\/+/, ''));
+      files.push(file);
       return;
     }
     const reader = (entry as FileSystemDirectoryEntry).createReader();
@@ -157,10 +177,48 @@ export interface OpenOutcome {
 const componentsOf = (session: Session | null): AssemblyState['components'] =>
   session?.phase === 'ready' ? session.job?.assembly?.components ?? [] : [];
 
+const metaString = (session: Session | null, key: string): string | null => {
+  const value = session?.job?.result?.meta[key];
+  return typeof value === 'string' && value ? value : null;
+};
+
+/** Where an assembly recorded a file, for telling copies of it apart. */
+export function recordedLocation(
+  recorded: string | null | undefined,
+  assemblyRecorded: string | null,
+  assemblyHere: string | null,
+): RecordedLocation | null {
+  return recorded ? { recorded, assemblyRecorded, assemblyHere } : null;
+}
+
+const locationIn = (assembly: Session, name: string, component?: AssemblyComponent): RecordedLocation | null => {
+  const paths = assembly.job?.result?.meta.referencedPaths as Record<string, string> | undefined;
+  return recordedLocation(
+    component?.originalPath ?? paths?.[name.toLowerCase()],
+    metaString(assembly, 'originalPath'),
+    assembly.sourcePath,
+  );
+};
+
 const namesIn = (session: Session | null, key: string): Set<string> => {
   const value = session?.job?.result?.meta[key];
   return new Set(Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string').map((v) => v.toLowerCase()) : []);
 };
+
+/** The candidate whose recorded place for `path` fits best; the first when none says. */
+function bestOf<T>(candidates: T[], where: (candidate: T) => RecordedLocation | null, path: string): T | undefined {
+  let best: T | undefined;
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const location = where(candidate);
+    const score = location ? locationScore(path, location) : 0;
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
+}
 
 /** At most this many components are sent at once, across all assemblies. */
 const PARALLEL_COMPONENTS = 3;
@@ -178,8 +236,9 @@ export async function openFiles(input: File[], options: OpenOptions): Promise<Op
       refused.push(why);
       continue;
     }
-    // The same name twice (two folders): the first one found is used.
-    const key = file.name.toLowerCase();
+    // The same name in two folders is kept: two versions of a project, or a
+    // library copy. Which one an assembly means is decided by where it is.
+    const key = pathOf(file).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     files.push(file);
@@ -193,7 +252,7 @@ export async function openFiles(input: File[], options: OpenOptions): Promise<Op
   const opened: string[] = [];
 
   /* 1. Assemblies first: what they are made of decides where the rest goes. */
-  const fresh = assemblies.map((file) => ({ file, id: startUpload(file) }));
+  const fresh = assemblies.map((file) => ({ file, id: startUpload(file, undefined, pathOf(file)) }));
   opened.push(...fresh.map((entry) => entry.id));
   if (fresh.length > 0) options.navigate(fresh[0].id);
   await Promise.all(fresh.map((entry) => whenSettled(entry.id)));
@@ -208,7 +267,7 @@ export async function openFiles(input: File[], options: OpenOptions): Promise<Op
   const parentOf = new Map<string, string>();
   for (const sub of fresh) {
     const name = sub.file.name.toLowerCase();
-    const parent = candidates.find(
+    const parents = candidates.filter(
       (session) =>
         session.id !== sub.id &&
         namesIn(session, 'referencedFiles').has(name) &&
@@ -216,6 +275,9 @@ export async function openFiles(input: File[], options: OpenOptions): Promise<Op
         // Never fold two assemblies into each other.
         namesIn(getSession(sub.id), 'referencedFiles').has(session.fileName.toLowerCase()) === false,
     );
+    // Two versions of a project both name this sub-assembly: it belongs to
+    // the one whose recorded place for it is where it actually is.
+    const parent = bestOf(parents, (session) => locationIn(session, name), pathOf(sub.file));
     // A sub-assembly dropped on its own is opened on its own: that is how one
     // looks at just that unit.
     if (parent && files.length > 1 && getSession(sub.id)?.phase === 'ready') parentOf.set(sub.id, parent.id);
@@ -231,27 +293,33 @@ export async function openFiles(input: File[], options: OpenOptions): Promise<Op
   }));
   const targets = candidates.filter((session) => !parentOf.has(session.id));
 
-  /* 3. Parts go to every assembly that asks for them. */
+  /* 3. Parts go to every assembly that asks for them — the right copy each. */
   const attach: { target: Session; file: File }[] = [];
-  const leftovers: File[] = [];
-  for (const file of others) {
-    const key = file.name.toLowerCase();
-    let related = false;
-    for (const target of targets) {
-      const component = componentsOf(target).find((c) => c.name.toLowerCase() === key);
-      if (!component) continue;
-      related = true;
-      if (component.status === 'missing' || component.status === 'failed') attach.push({ target, file });
+  const byName = new Map<string, File[]>();
+  for (const file of others) byName.set(file.name.toLowerCase(), [...(byName.get(file.name.toLowerCase()) ?? []), file]);
+  const related = new Set<string>();
+  for (const target of targets) {
+    for (const component of componentsOf(target)) {
+      const key = component.name.toLowerCase();
+      const copies = byName.get(key);
+      if (!copies) continue;
+      related.add(key);
+      if (component.status !== 'missing' && component.status !== 'failed') continue;
+      const where = locationIn(target, key, component);
+      const file = where ? bestLocated(copies, pathOf, where) : copies[0];
+      if (file) attach.push({ target, file });
     }
-    // One part dropped on its own is opened even if an assembly already has
-    // it: that is how one looks at a single part. From a batch, a part the
-    // assembly already shows is not opened a second time.
-    const alone = others.length === 1 && assemblies.length === 0;
-    if (!related || (alone && !attach.some((entry) => entry.file === file))) leftovers.push(file);
   }
+  // One part dropped on its own is opened even if an assembly already has
+  // it: that is how one looks at a single part. From a batch, a part an
+  // assembly names is not opened a second time.
+  const alone = others.length === 1 && assemblies.length === 0;
+  const leftovers = others.filter(
+    (file) => !related.has(file.name.toLowerCase()) || (alone && !attach.some((entry) => entry.file === file)),
+  );
 
   /* 4. The rest open on their own, one after another. */
-  for (const file of leftovers) opened.push(startUpload(file));
+  for (const file of leftovers) opened.push(startUpload(file, undefined, pathOf(file)));
 
   // Put the right thing on screen before the folded tabs close.
   const firstFresh = fresh[0]?.id;

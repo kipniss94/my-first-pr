@@ -341,6 +341,8 @@ export interface AssemblyComponent {
   fileId: string | null;
   /** Configurations of this part the assembly uses, so each can be drawn as used. */
   configurations?: string[];
+  /** Where SolidWorks had the file when the assembly was saved. */
+  originalPath?: string;
 }
 
 export interface AssemblyState {

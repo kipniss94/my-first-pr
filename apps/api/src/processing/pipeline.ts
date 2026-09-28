@@ -152,6 +152,7 @@ function attachAssembly(job: JobRecord, result: JobResult): void {
   const names = result.meta.componentNames;
   if (result.meta.role !== 'assembly' || !Array.isArray(names) || names.length === 0) return;
   const configurations = (result.meta.componentConfigurations ?? {}) as Record<string, string[]>;
+  const paths = (result.meta.referencedPaths ?? {}) as Record<string, string>;
   job.assembly = {
     role: 'assembly',
     components: names
@@ -162,6 +163,7 @@ function attachAssembly(job: JobRecord, result: JobResult): void {
         jobId: null,
         fileId: null,
         configurations: configurations[name.toLowerCase()] ?? [],
+        ...(paths[name.toLowerCase()] ? { originalPath: paths[name.toLowerCase()] } : {}),
       })),
     updatedAt: new Date().toISOString(),
   };

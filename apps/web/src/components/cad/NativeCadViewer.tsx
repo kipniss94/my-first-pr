@@ -2,7 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AssemblyState, NativeCadDocument } from '@docuview/shared';
+import { commonFolder, pathSegments, type AssemblyState, type NativeCadDocument } from '@docuview/shared';
 import { apiUrl, fetchApi } from '@/lib/api';
 import { useAssembly, type ComponentView } from '@/lib/assembly';
 import { filesIn } from '@/lib/open';
@@ -22,10 +22,31 @@ interface NativeCadViewerProps {
   /** Parent job, needed to send components back to the right assembly. */
   jobId: string | null;
   assembly: AssemblyState | null;
+  /** Where SolidWorks had this assembly when it was saved. */
+  recordedPath?: string | null;
+  /** Where it was inside what was dropped, when it came from a folder. */
+  sourcePath?: string | null;
   onProgress(percent: number): void;
   onReady(): void;
   /** Receives the stored preview, which is this document's workspace card. */
   onThumbnail?(source: string): void;
+}
+
+/** The folder that held the assembly and all its parts, as SolidWorks recorded them. */
+interface Storage {
+  name: string;
+  /** Folders between it and the assembly's own folder. */
+  levelsUp: number;
+  /** Its depth in the recorded paths, to show each part's place below it. */
+  depth: number;
+  path: string[];
+}
+
+/** Where a part was kept: below the common folder when it was there, else its whole folder. */
+function keptIn(originalPath: string, storage: Storage): string {
+  const folder = pathSegments(originalPath).slice(0, -1);
+  const inside = commonFolder([storage.path.join('/') + '/x', originalPath]).length === storage.depth;
+  return (inside ? [storage.name, ...folder.slice(storage.depth)] : folder).join('\\');
 }
 
 const LAYOUT_NOTE =
@@ -47,10 +68,15 @@ export function NativeCadViewer({
   onProgress,
   onReady,
   onThumbnail,
+  recordedPath = null,
+  sourcePath = null,
 }: NativeCadViewerProps) {
   const [document, setDocument] = useState<NativeCadDocument | null>(null);
   const [failed, setFailed] = useState(false);
-  const { components, renderable, counts, add, rejected, dismissRejected } = useAssembly(jobId, assembly);
+  const { components, renderable, counts, add, rejected, dismissRejected } = useAssembly(jobId, assembly, {
+    recorded: recordedPath,
+    here: sourcePath,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -108,6 +134,25 @@ export function NativeCadViewer({
   }
   const inScene = new Set(renderable.map((component) => component.name.toLowerCase()));
   const placedCount = (document.placements ?? []).filter((p) => inScene.has(p.component.toLowerCase())).length;
+  // Where the parts were kept when the assembly was saved: the one folder to
+  // choose so that every one of them is found.
+  // Library parts kept on another drive or root (Toolbox fasteners, say) are
+  // left out, or the one folder would shrink to a drive letter.
+  const recorded = recordedPath
+    ? components
+        .map((c) => c.originalPath)
+        .filter((p): p is string => Boolean(p) && commonFolder([recordedPath, p as string]).length >= 2)
+    : [];
+  const root = recordedPath && recorded.length > 0 ? commonFolder([recordedPath, ...recorded]) : [];
+  const storage: Storage | null =
+    root.length >= 2 && recordedPath
+      ? {
+          name: root[root.length - 1],
+          levelsUp: pathSegments(recordedPath).length - 1 - root.length,
+          depth: root.length,
+          path: root,
+        }
+      : null;
   const showGeometry = renderable.length > 0 || Boolean(document.geometry3d);
 
   return (
@@ -138,6 +183,7 @@ export function NativeCadViewer({
             components={components}
             counts={counts}
             occurrences={occurrences}
+            storage={storage}
             placed={placedCount}
             placementsTotal={document.placements?.length ?? 0}
             onAdd={add}
@@ -316,6 +362,7 @@ function ComponentsPanel({
   rejected,
   onDismissRejected,
   disabled,
+  storage,
 }: {
   components: ComponentView[];
   counts: { missing: number; pending: number; ready: number; failed: number };
@@ -328,6 +375,7 @@ function ComponentsPanel({
   rejected: { name: string; message: string } | null;
   onDismissRejected(): void;
   disabled: boolean;
+  storage: Storage | null;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
@@ -335,6 +383,8 @@ function ComponentsPanel({
   const [dragging, setDragging] = useState(false);
   /** The component a "Locate…" dialog is open for. */
   const [locating, setLocating] = useState<string | null>(null);
+  /** Parts shown from a file of another name, which the user chose on purpose. */
+  const [substitutes, setSubstitutes] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [searchRoot, setSearchRoot] = useState('C:\\');
   const [editingRoot, setEditingRoot] = useState(false);
@@ -490,8 +540,23 @@ function ComponentsPanel({
           const target = locating;
           setLocating(null);
           if (!file || !target) return;
+          // Another name is allowed — files get renamed — but never taken
+          // silently: a wrong part would stand in the right one's place.
+          if (
+            file.name.toLowerCase() !== target.toLowerCase() &&
+            !window.confirm(`The assembly asks for “${target}”.\nThe chosen file is “${file.name}”.\n\nPut it in that part's place anyway?`)
+          ) {
+            return;
+          }
           const sameType = /\.[^.]+$/.exec(file.name)?.[0].toLowerCase() === /\.[^.]+$/.exec(target)?.[0].toLowerCase();
-          onAdd([sameType && file.name !== target ? new File([file], target, { type: file.type }) : file]);
+          const renamed = sameType && file.name.toLowerCase() !== target.toLowerCase();
+          setSubstitutes((current) => {
+            const next = { ...current };
+            if (renamed) next[target] = file.name;
+            else delete next[target];
+            return next;
+          });
+          onAdd([renamed ? new File([file], target, { type: file.type }) : file]);
         }}
       />
 
@@ -511,6 +576,21 @@ function ComponentsPanel({
           <p className="text-[12px] text-mist-200">
             {missingNames.length} file{missingNames.length === 1 ? '' : 's'} still missing.
           </p>
+          {storage && (
+            <p className="mt-1 text-[11px] leading-relaxed text-mist-400" data-testid="component-storage">
+              {storage.levelsUp <= 0 ? (
+                <>
+                  They were kept beside the assembly, in <span className="text-mist-200">“{storage.name}”</span>.
+                </>
+              ) : (
+                <>
+                  They were kept under <span className="text-mist-200">“{storage.name}”</span>, {storage.levelsUp} folder
+                  {storage.levelsUp === 1 ? '' : 's'} above the assembly’s own. Choose that folder with “Choose the folder
+                  with the parts…”: each part is found by name, and the right copy by its place.
+                </>
+              )}
+            </p>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
             <button
               type="button"
@@ -621,8 +701,22 @@ function ComponentsPanel({
                   </RowAction>
                 </div>
               )}
+              {needed && storage && component.originalPath && (
+                <p
+                  className="mt-1 truncate pl-3.5 font-mono text-[10px] text-mist-500"
+                  title={component.originalPath}
+                  data-testid="component-where"
+                >
+                  in {keptIn(component.originalPath, storage)}
+                </p>
+              )}
               {component.status === 'failed' && component.error && (
                 <p className="mt-1 pl-3.5 text-[11px] leading-snug text-danger">{component.error.message}</p>
+              )}
+              {substitutes[component.name] && (
+                <p className="mt-1 pl-3.5 text-[11px] leading-snug text-warn" data-testid="component-substitute">
+                  Shown from “{substitutes[component.name]}”, chosen in its place.
+                </p>
               )}
               {notKept.length > 0 && (
                 <p className="mt-1 pl-3.5 text-[11px] leading-snug text-warn">
