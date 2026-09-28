@@ -140,6 +140,18 @@ describe('native CAD inspection', () => {
     assert.equal(info.version, 'SolidWorks 2021');
   });
 
+  it('does not take stray capitals in the bytes for another application', () => {
+    const noise = Buffer.from('\u0001NX\u0002 geometry', 'latin1');
+    const bare = buildCompoundFile([{ name: 'Contents', data: noise }]);
+    assert.equal(inspectNativeCad(bare, 'sldprt', 'sldprt').version, null);
+
+    const named = buildCompoundFile([
+      { name: 'Contents', data: noise },
+      { name: 'ISolidWorksInformation', data: Buffer.from('SolidWorks 2021 document', 'utf16le') },
+    ]);
+    assert.equal(inspectNativeCad(named, 'sldprt', 'sldprt').version, 'SolidWorks 2021');
+  });
+
   it('falls back to a preview stream when there is no summary thumbnail', () => {
     const png = buildPng(160, 120);
     const file = buildCompoundFile([

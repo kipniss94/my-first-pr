@@ -149,6 +149,40 @@ const EDGE_PEN: Pen = { color: 0, widthMm: 0.35, style: 'CONTINUOUS' };
 /** A COLORREF (0x00BBGGRR) as 0xRRGGBB. */
 const rgb = (colorref: number) => ((colorref & 0xff) << 16) | (colorref & 0xff00) | ((colorref >> 16) & 0xff);
 
+/**
+ * SolidWorks' symbol library (kind 0x13 records name a library and a symbol)
+ * as characters. Weld symbols and GOST view arrows have none and are left out.
+ */
+const SYMBOLS: Record<string, string> = {
+  'MOD/DIAM': 'Ø',
+  'MOD/PM': '±',
+  'MOD/DEG': '°',
+  'MOD/MMC': 'Ⓜ',
+  'MOD/MMC_DIM': 'Ⓜ',
+  'MOD/LMC': 'Ⓛ',
+  'MOD/RFS': 'Ⓢ',
+  'MOD/SPHD': 'SØ',
+  'MOD/CL': '℄',
+  'MOD/SQUARE': '□',
+  'MOD/DEPTH': '↧',
+  'MOD/CBORE': '⌴',
+  'MOD/CSINK': '⌵',
+  'GGTOL/POSI': '⌖',
+  'GGTOL/FLAT': '⏥',
+  'GGTOL/STRA': '⏤',
+  'GGTOL/CIRC': '○',
+  'GGTOL/CYL': '⌭',
+  'GGTOL/PERP': '⟂',
+  'GGTOL/PARA': '∥',
+  'GGTOL/ANGU': '∠',
+  'GGTOL/CONC': '◎',
+  'GGTOL/SYMM': '⌯',
+  'GGTOL/SRUN': '↗',
+  'GGTOL/TRUN': '⌰',
+  'GGTOL/LPRO': '⌒',
+  'GGTOL/SPRO': '⌓',
+};
+
 interface Located<T> {
   at: number;
   shape: T;
@@ -209,6 +243,24 @@ function readAnnotations(dl: Buffer): Located<Shape>[] {
       const name = height > 0 && height < 0.2 ? cstring(dl, i + 40) : null;
       if (name) {
         font = { height, name: name.text };
+        i = name.end - 1;
+        continue;
+      }
+    }
+    if (kind === 0x13 && size >= 0x40 && size < 0x400 && i + 60 <= dl.length) {
+      // A symbol from SolidWorks' library, set like a character.
+      const v = [f64(i + 8), f64(i + 16), f64(i + 36), f64(i + 44)];
+      const library = v.every(finite) ? cstring(dl, i + 52) : null;
+      const name = library ? cstring(dl, library.end) : null;
+      if (library && name) {
+        const glyph = SYMBOLS[`${library.text}/${name.text}`];
+        if (glyph && v[3] > 0 && v[3] < 0.2) {
+          out.push({
+            at: i,
+            // Set in the size of the text around it; its own height is its box's.
+            shape: { kind: 'text', at: [v[0], v[1]], angle: v[2], height: Math.min(v[3], font.height), font: 'sans-serif', text: glyph, advances: null },
+          });
+        }
         i = name.end - 1;
         continue;
       }
@@ -387,6 +439,9 @@ function readBuckets(vb: Buffer): Bucket[] {
       for (let i = start + 4; i + 4 + stride * 2 <= end; i += 1) {
         const n = vb.readUInt32LE(i);
         if (n < 2 || n > 100_000 || i + 4 + n * stride > end) continue;
+        // A tessellation array, [12][100][2][n]: its 2 is not an edge's count,
+        // and what follows its n is not edges.
+        if (i >= 8 && vb.readUInt32LE(i - 8) === 12 && vb.readUInt32LE(i - 4) === 100) continue;
         if (i >= 12 && vb.readUInt32LE(i - 12) === 12 && vb.readUInt32LE(i - 8) === 100 && vb.readUInt32LE(i - 4) === 2) {
           i += 3 + n * stride;
           continue;
@@ -397,7 +452,8 @@ function readBuckets(vb: Buffer): Bucket[] {
           const o = i + 4 + k * stride;
           const q = [read(o), read(o + bytes), read(o + bytes * 2)];
           const last = points[k - 1];
-          if (!q.every(plausible) || (last && Math.hypot(q[0] - last[0], q[1] - last[1], q[2] - last[2]) > 0.5)) {
+          // A step of metres is real: a 4 m duct's side is one straight edge.
+          if (!q.every(plausible) || (last && Math.hypot(q[0] - last[0], q[1] - last[1], q[2] - last[2]) > 10)) {
             good = false;
             break;
           }
@@ -434,35 +490,44 @@ function fit(view: ViewRecord, bucket: Bucket): { inside: number; all: number } 
  * Which views each bucket's edges belong to — nothing in the file says, so it
  * is worked out and only accepted when the geometry agrees.
  *
- * When there are as many buckets with edges as views, they come in the same
- * order: bucket i is view i's if, placed by view i, it lands inside its frame.
- * Otherwise, a bucket's header starts with its view's direction (the third
- * row of the rotation): among the views looking exactly that way, the one
- * whose frame holds (nine tenths of) it, the smallest such frame; the rest is
- * cropped at the frame. When none holds it — a
- * broken view, shortened on the sheet — or none looks that way, it is left out
- * rather than given to some other view it happens to fit.
+ * A bucket's header starts with its view's direction (the third row of the
+ * rotation). Buckets and views come in the same order, so bucket i is view
+ * i's for as long as their directions agree and the bucket lands in the
+ * view's frame. The rest: among the views on a sheet looking exactly that
+ * way, the one whose frame holds (nine tenths of) it, the smallest such frame;
+ * what spills over is cropped. When none holds it — a broken view, shortened
+ * on the sheet — or none looks that way, it is left out rather than given to
+ * some other view it happens to fit.
  *
  * A view left without edges (broken views, detail views, crops) is shown from
  * the sheet picture instead: blurry but right beats sharp but wrong.
  */
-function assignBuckets(views: ViewRecord[], buckets: Bucket[], directions: number[][]): void {
+function assignBuckets(views: ViewRecord[], shown: Set<ViewRecord>, buckets: Bucket[], directions: number[][]): void {
   const holds = (view: ViewRecord, bucket: Bucket) => {
     const { inside, all } = fit(view, bucket);
     return all > 0 && inside / all >= 0.9;
   };
-  const withEdges = buckets.map((b, n) => (b.edges.length > 0 ? n : -1)).filter((n) => n >= 0);
-  if (withEdges.length === views.length && withEdges.every((n, k) => holds(views[k], buckets[n]))) {
-    withEdges.forEach((n, k) => views[k].buckets.push(n));
-    return;
-  }
-  const area = (v: ViewRecord) => (v.frame[2] - v.frame[0]) * (v.frame[3] - v.frame[1]);
   // Same direction, sign included: a bucket facing the other way is not that view's.
   const facing = (v: ViewRecord, d: number[]) => v.rotation[2][0] * d[0] + v.rotation[2][1] * d[1] + v.rotation[2][2] * d[2] > 1 - 1e-6;
-  for (const n of withEdges) {
+  const withEdges = buckets.map((b, n) => (b.edges.length > 0 ? n : -1)).filter((n) => n >= 0);
+  // Buckets and views come in the same order — views off the sheet included —
+  // for as long as each bucket looks the way its view does.
+  let k = 0;
+  for (; k < withEdges.length && k < views.length; k += 1) {
+    const n = withEdges[k];
+    if (!facing(views[k], directions[n]) || !holds(views[k], buckets[n])) break;
+    views[k].buckets.push(n);
+  }
+  // The rest by direction and frame, among the views on a sheet. A view's
+  // frame is its model's extent seen its way, so any bucket of that model
+  // fits a view looking the same way: the direction decides, the frame only
+  // confirms, and the smallest frame wins (a detail view's parent holds it too).
+  const area = (v: ViewRecord) => (v.frame[2] - v.frame[0]) * (v.frame[3] - v.frame[1]);
+  for (const n of withEdges.slice(k)) {
     let best: ViewRecord | null = null;
     for (const view of views) {
-      if (facing(view, directions[n]) && holds(view, buckets[n]) && (!best || area(view) < area(best))) best = view;
+      if (!shown.has(view) || !facing(view, directions[n]) || !holds(view, buckets[n])) continue;
+      if (!best || area(view) < area(best)) best = view;
     }
     best?.buckets.push(n);
   }
@@ -777,13 +842,17 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
   // thumbnails off the sheet, while a detail view's origin can be far off it
   // (its model's origin, magnified) with the view itself on the sheet.
   const largest = sheetRecords.reduce((a, b) => (a.width * a.height > b.width * b.height ? a : b));
-  const views = readViews(dl).filter((view) => {
-    const cx = (view.frame[0] + view.frame[2]) / 2;
-    const cy = (view.frame[1] + view.frame[3]) / 2;
-    return cx > -0.01 && cy > -0.01 && cx < largest.width + 0.01 && cy < largest.height + 0.01;
-  });
+  const allViews = readViews(dl);
+  const shown = new Set(
+    allViews.filter((view) => {
+      const cx = (view.frame[0] + view.frame[2]) / 2;
+      const cy = (view.frame[1] + view.frame[3]) / 2;
+      return cx > -0.01 && cy > -0.01 && cx < largest.width + 0.01 && cy < largest.height + 0.01;
+    }),
+  );
   const buckets = vb ? readBuckets(vb) : [];
-  assignBuckets(views, buckets, buckets.map((b) => b.direction));
+  assignBuckets(allViews, shown, buckets, buckets.map((b) => b.direction));
+  const views = allViews.filter((view) => shown.has(view));
   findDetails(
     views,
     annotations.flatMap(({ shape }) => (shape.kind === 'path' && shape.circle ? [shape.circle] : [])),
@@ -867,8 +936,32 @@ function registerPicture(shapes: Shape[], sheet: { width: number; height: number
     }
     return hits / probe.length;
   };
+  // Off by a pixel or two is common and enough to leave the picture's lines
+  // beside the drawn ones: always fine-tuned, on exact hits.
+  const exact = (m: PictureMap) => {
+    let hits = 0;
+    for (const [x, y] of probe) if (raster.dark(Math.round(m.x + x * m.scale), Math.round(m.y - y * m.scale))) hits += 1;
+    return hits;
+  };
+  const tune = (start: PictureMap): PictureMap => {
+    let found = start;
+    let most = exact(start);
+    for (const k of [0.99, 0.995, 1, 1.005, 1.01]) {
+      for (let dx = -4; dx <= 4; dx += 1) {
+        for (let dy = -4; dy <= 4; dy += 1) {
+          const m = { scale: start.scale * k, x: start.x + dx, y: start.y + dy };
+          const hits = exact(m);
+          if (hits > most) {
+            most = hits;
+            found = m;
+          }
+        }
+      }
+    }
+    return found;
+  };
   const base = score(fitted);
-  if (base >= 0.8) return fitted;
+  if (base >= 0.8) return tune(fitted);
 
   // The frame: the outermost long straight lines, in the sheet and in the picture.
   const sheetFrame = [Infinity, Infinity, -Infinity, -Infinity];
@@ -908,26 +1001,14 @@ function registerPicture(shapes: Shape[], sheet: { width: number; height: number
     }
   }
   let best = fitted;
-  let bestScore = base;
+  const bestScore = base;
   if (sheetFrame.every(Number.isFinite) && top >= 0 && left >= 0 && right > left && bottom > top) {
     const sx = (right - left) / (sheetFrame[2] - sheetFrame[0]);
     const sy = (bottom - top) / (sheetFrame[3] - sheetFrame[1]);
     if (Math.abs(sx - sy) / Math.max(sx, sy) < 0.06) {
       const scale = (sx + sy) / 2;
-      const guess = { scale, x: left - sheetFrame[0] * scale, y: bottom + sheetFrame[1] * scale };
-      // Fine-tune: a pixel or two of offset, a percent of scale.
-      for (const k of [0.99, 0.995, 1, 1.005, 1.01]) {
-        for (let dx = -3; dx <= 3; dx += 1) {
-          for (let dy = -3; dy <= 3; dy += 1) {
-            const m = { scale: guess.scale * k, x: guess.x + dx, y: guess.y + dy };
-            const sc = score(m);
-            if (sc > bestScore) {
-              bestScore = sc;
-              best = m;
-            }
-          }
-        }
-      }
+      const guess = tune({ scale, x: left - sheetFrame[0] * scale, y: bottom + sheetFrame[1] * scale });
+      if (score(guess) > bestScore) best = guess;
     }
   }
   return best;
@@ -935,10 +1016,10 @@ function registerPicture(shapes: Shape[], sheet: { width: number; height: number
 
 /**
  * Where the sheet picture has ink that the drawn sheet does not: the drawn
- * sheet is rasterised at the picture's resolution, a little wider than drawn
- * (the picture's lines are thicker), and the uncovered dark pixels are grouped
- * into regions. Specks — a filled arrowhead drawn as an outline, the odd
- * pixel of a different font — are not worth a patch.
+ * sheet is rasterised at the picture's resolution, wider than drawn (the
+ * picture's lines are thicker and may sit a pixel off), and the uncovered
+ * dark pixels are grouped into regions. Specks — a filled arrowhead drawn as
+ * an outline, the odd pixel of a different font — are not worth a patch.
  */
 function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap): [number, number, number, number][] {
   const { width: W, height: H } = raster;
@@ -948,7 +1029,7 @@ function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap)
   const [sx0, sy0] = toPx([0, sheet.height]);
   const [sx1, sy1] = toPx([sheet.width, 0]);
   const covered = new Uint8Array(W * H);
-  const pad = 2;
+  const pad = 3;
   const mark = (px: number, py: number) => {
     const cx = Math.round(px);
     const cy = Math.round(py);
@@ -981,10 +1062,11 @@ function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap)
       const c = Math.cos(shape.angle);
       const n = Math.sin(shape.angle);
       const corners = [
-        [-0.2 * shape.height, -0.5],
-        [length + 0.2 * shape.height, -0.5],
-        [length + 0.2 * shape.height, 1.6],
-        [-0.2 * shape.height, 1.6],
+        // Generous: SolidWorks' picture sets text in its own font, often larger.
+        [-0.6 * shape.height, -1],
+        [length + 0.6 * shape.height, -1],
+        [length + 0.6 * shape.height, 2],
+        [-0.6 * shape.height, 2],
       ].map(([u, v]) => toPx([shape.at[0] + u * c - v * shape.height * n, shape.at[1] + u * n + v * shape.height * c]));
       fill(
         Math.min(...corners.map((p) => p[0])),

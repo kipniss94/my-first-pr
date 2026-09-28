@@ -35,6 +35,8 @@ const font = (height: number) =>
   Buffer.concat([u32(0x78), u32(0x0a), f64(height), u32(0), f64(0), f64(0.001), u32(1), text('GOST type A'), f64(1), f64(0)]);
 const label = (x: number, y: number, s: string, advances: number[]) =>
   Buffer.concat([u32(0xc4), u32(0x12), f64(x, y, 0), u32(0), f64(0), u32(0), text(s), Buffer.from([1, 0]), u32(advances.length), f32(...advances)]);
+const symbol = (x: number, y: number, height: number, library: string, name: string) =>
+  Buffer.concat([u32(0x4a), u32(0x13), f64(x, y), Buffer.alloc(12), f64(0, height), text(library), text(name)]);
 const sheet = (name: string, width: number, height: number) =>
   Buffer.concat([u32(0x38), u32(0x1e), Buffer.alloc(16), f64(1), u32(1), f64(height, width), text(name), Buffer.alloc(16)]);
 
@@ -46,11 +48,13 @@ describe('drawing sheets', () => {
     circle(0.1, 0.1, 0.01),
     font(0.0035),
     label(0.05, 0.05, '110', [0.0015, 0.0015, 0.0022]),
+    symbol(0.045, 0.05, 0.005, 'MOD', 'DIAM'),
+    symbol(0.06, 0.06, 0.005, 'GWLD', 'FILLET'),
     sheet('Лист1-Active', 0.42, 0.297),
   ]);
   const drawing = readDrawing([{ name: 'Contents/DisplayLists', offset: 0, data: stream }]);
 
-  it('reads the sheet, its lines, its circle and its text', () => {
+  it('reads the sheet, its lines, its circle, its text and its symbols', () => {
     assert.ok(drawing);
     assert.equal(drawing.sheets.length, 1);
     const [first] = drawing.sheets;
@@ -71,12 +75,19 @@ describe('drawing sheets', () => {
     assert.ok(Math.abs(round.circle.radius - 0.01) < 1e-12);
 
     const texts = first.shapes.filter((s) => s.kind === 'text');
-    assert.equal(texts.length, 1);
+    // The weld symbol has no character and is left out.
+    assert.equal(texts.length, 2);
     const t = texts[0];
     assert.ok(t.kind === 'text');
     assert.equal(t.text, '110');
     assert.equal(t.height, 0.0035);
     assert.deepEqual(t.advances?.map((a) => Math.round(a * 1e4)), [15, 15, 22]);
+    // A symbol is set in the size of the text around it.
+    const diameter = texts[1];
+    assert.ok(diameter.kind === 'text');
+    assert.equal(diameter.text, 'Ø');
+    assert.deepEqual(diameter.at, [0.045, 0.05]);
+    assert.equal(diameter.height, 0.0035);
   });
 
   it('writes the sheet as SVG in millimetres, text fitted to the length SolidWorks laid it out in', () => {
@@ -86,6 +97,7 @@ describe('drawing sheets', () => {
     // x 10 mm, y from the top: 297 - 20.
     assert.match(svg, /M10 277L200 277/);
     assert.match(svg, />110<\/text>/);
+    assert.match(svg, />Ø<\/text>/);
     assert.match(svg, /textLength="5.2"/);
   });
 

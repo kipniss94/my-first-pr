@@ -319,7 +319,7 @@ function searchableText(buffer: Buffer): string {
 
 /* ---------------------------------- main ---------------------------------- */
 
-const APPLICATION_VERSION = /\b(SolidWorks|SOLIDWORKS|Autodesk Inventor|Inventor|CATIA|Revit|NX|Creo|Pro\/ENGINEER|Siemens)\b[^\S\r\n]*(V?\d{1,4}(?:\.\d{1,3})?)?/;
+const APPLICATION_VERSION = /\b(SolidWorks|SOLIDWORKS|Autodesk Inventor|Inventor|CATIA|Revit|NX|Creo|Pro\/ENGINEER|Siemens)\b[^\S\r\n]*(V?\d{1,4}(?:\.\d{1,3})?)?/g;
 
 export function inspectNativeCad(buffer: Buffer, formatId: string, extension: string): NativeCadInfo {
   const family = familyFor(formatId);
@@ -400,7 +400,7 @@ export function inspectNativeCad(buffer: Buffer, formatId: string, extension: st
         if (haystack.length > 8 * 1024 * 1024) break;
         haystack += searchableText(cfb.read(entry));
       }
-      version = detectVersion(haystack);
+      version = detectVersion(haystack, family.application);
       references = extractReferences(haystack, family.referenceExtensions);
     } else {
       detail.push('cfb:unreadable');
@@ -415,7 +415,7 @@ export function inspectNativeCad(buffer: Buffer, formatId: string, extension: st
   }
   if (!version || references.length === 0) {
     const text = searchableText(buffer.subarray(0, Math.min(buffer.length, 8 * 1024 * 1024)));
-    version ??= detectVersion(text);
+    version ??= detectVersion(text, family.application);
     if (references.length === 0) references = extractReferences(text, family.referenceExtensions);
   }
 
@@ -444,9 +444,18 @@ function firstPreview(cfb: { read(entry: CfbEntry): Buffer }, entries: CfbEntry[
   return bestImage(found);
 }
 
-function detectVersion(text: string): string | null {
-  const match = APPLICATION_VERSION.exec(text);
-  if (!match) return null;
-  const product = match[1].replace('SOLIDWORKS', 'SolidWorks');
-  return match[2] ? `${product} ${match[2]}` : product;
+/**
+ * The application and version a file names. Binary read as text is full of
+ * short capitals, so another product's bare name ("NX" between two control
+ * bytes) does not count; with a version number after it, it does.
+ */
+function detectVersion(text: string, application: string): string | null {
+  let looked = 0;
+  for (const match of text.matchAll(APPLICATION_VERSION)) {
+    const product = match[1].replace('SOLIDWORKS', 'SolidWorks');
+    if (match[2]) return `${product} ${match[2]}`;
+    if (application.includes(product)) return product;
+    if (++looked >= 1000) break;
+  }
+  return null;
 }
