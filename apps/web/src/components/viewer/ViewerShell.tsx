@@ -26,6 +26,10 @@ const NativeCadViewer = dynamic(() => import('@/components/cad/NativeCadViewer')
   ssr: false,
   loading,
 });
+const DrawingViewer = dynamic(() => import('@/components/cad/DrawingViewer').then((m) => m.DrawingViewer), {
+  ssr: false,
+  loading,
+});
 const PdfViewer = dynamic(() => import('@/components/pdf/PdfViewer').then((m) => m.PdfViewer), { ssr: false, loading });
 const WordViewer = dynamic(() => import('@/components/office/WordViewer').then((m) => m.WordViewer), { ssr: false, loading });
 const SheetViewer = dynamic(() => import('@/components/office/SheetViewer').then((m) => m.SheetViewer), { ssr: false, loading });
@@ -158,6 +162,15 @@ export function ViewerShell({ session }: { session: Session }) {
               assembly={job?.assembly ?? null}
               recordedPath={typeof result.meta.originalPath === 'string' ? result.meta.originalPath : null}
               sourcePath={session.sourcePath}
+              onProgress={onViewerLoading}
+              onReady={onViewerReady}
+              onThumbnail={onThumbnail}
+            />
+          )}
+          {result.viewer === 'cad-drawing' && (
+            <DrawingViewer
+              source={result.source}
+              fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}

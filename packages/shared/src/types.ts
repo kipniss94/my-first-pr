@@ -132,6 +132,7 @@ export type ViewerId =
   | 'cad-nmg' // server-normalized geometry (STEP/IGES/BREP)
   | 'cad-dxf' // 2D DXF vector viewer
   | 'cad-preview' // native CAD opened from its stored preview and properties
+  | 'cad-drawing' // a CAD drawing: its sheets as vector SVG
   | 'pdf'
   | 'office-word'
   | 'office-sheet'
@@ -380,6 +381,32 @@ export interface AssemblyPlacement {
  * is configured the document never reaches this shape at all — it goes through
  * the normal STEP path instead.
  */
+/** One sheet of a CAD drawing, drawn from the file. */
+export interface DrawingSheetDocument {
+  name: string;
+  widthMm: number;
+  heightMm: number;
+  /** The sheet as SVG, millimetres, top-left origin. */
+  svg: string;
+  /** The picture the CAD system saved of the sheet, for comparison. */
+  picture: string | null;
+  views: number;
+  /** Views drawn from their own edges. */
+  viewsDrawn: number;
+  /** Views shown from the saved picture, their edges not placeable yet. */
+  viewsFromPicture: number;
+  active: boolean;
+}
+
+/** A CAD drawing (SolidWorks .SLDDRW) read without the CAD system. */
+export interface DrawingDocument {
+  application: string;
+  version: string | null;
+  sheets: DrawingSheetDocument[];
+  properties: { name: string; value: string }[];
+  note: string;
+}
+
 export interface NativeCadDocument {
   application: string;
   version: string | null;

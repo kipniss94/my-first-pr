@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { readDrawing, sheetSvg } from '../src/processing/sldprt/drawing.js';
+
+/**
+ * The record grammar of a drawing's sheet graphics, on a stream built by hand
+ * the way SolidWorks writes it: [u32 size][u32 kind] and then, tightly
+ * packed, the record's fields; MFC Unicode strings as FF FE FF, length, UTF-16.
+ */
+
+const u32 = (v: number) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(v);
+  return b;
+};
+const f64 = (...v: number[]) => {
+  const b = Buffer.alloc(8 * v.length);
+  v.forEach((x, k) => b.writeDoubleLE(x, k * 8));
+  return b;
+};
+const f32 = (...v: number[]) => {
+  const b = Buffer.alloc(4 * v.length);
+  v.forEach((x, k) => b.writeFloatLE(x, k * 4));
+  return b;
+};
+const text = (s: string) => Buffer.concat([Buffer.from([0xff, 0xfe, 0xff, s.length]), Buffer.from(s, 'utf16le')]);
+
+const pen = (colorref: number) =>
+  Buffer.concat([u32(0x4e), u32(0x0c), u32(colorref), Buffer.alloc(2), f32(-1), u32(3), u32(0), text('CONTINUOUS')]);
+const segment = (x0: number, y0: number, x1: number, y1: number) =>
+  Buffer.concat([u32(0x50), u32(4), f64(x0, y0, 0, x1, y1, 0), Buffer.alloc(1)]);
+const circle = (cx: number, cy: number, r: number) =>
+  Buffer.concat([u32(0x80), u32(2), f64(cx + r, cy, 0, cx + r, cy, 0, cx, cy, 0, 0, 0, 1)]);
+const font = (height: number) =>
+  Buffer.concat([u32(0x78), u32(0x0a), f64(height), u32(0), f64(0), f64(0.001), u32(1), text('GOST type A'), f64(1), f64(0)]);
+const label = (x: number, y: number, s: string, advances: number[]) =>
+  Buffer.concat([u32(0xc4), u32(0x12), f64(x, y, 0), u32(0), f64(0), u32(0), text(s), Buffer.from([1, 0]), u32(advances.length), f32(...advances)]);
+const sheet = (name: string, width: number, height: number) =>
+  Buffer.concat([u32(0x38), u32(0x1e), Buffer.alloc(16), f64(1), u32(1), f64(height, width), text(name), Buffer.alloc(16)]);
+
+describe('drawing sheets', () => {
+  const stream = Buffer.concat([
+    Buffer.alloc(32),
+    pen(0x0000ff),
+    segment(0.01, 0.02, 0.2, 0.02),
+    circle(0.1, 0.1, 0.01),
+    font(0.0035),
+    label(0.05, 0.05, '110', [0.0015, 0.0015, 0.0022]),
+    sheet('Лист1-Active', 0.42, 0.297),
+  ]);
+  const drawing = readDrawing([{ name: 'Contents/DisplayLists', offset: 0, data: stream }]);
+
+  it('reads the sheet, its lines, its circle and its text', () => {
+    assert.ok(drawing);
+    assert.equal(drawing.sheets.length, 1);
+    const [first] = drawing.sheets;
+    assert.equal(first.name, 'Лист1');
+    assert.equal(first.active, true);
+    assert.deepEqual([first.width, first.height], [0.42, 0.297]);
+
+    const paths = first.shapes.filter((s) => s.kind === 'path');
+    assert.equal(paths.length, 2);
+    // COLORREF 0x0000ff is red.
+    assert.equal(paths[0].kind === 'path' && paths[0].pen.color, 0xff0000);
+    assert.deepEqual(paths[0].kind === 'path' && paths[0].points, [
+      [0.01, 0.02],
+      [0.2, 0.02],
+    ]);
+    const round = paths[1];
+    assert.ok(round.kind === 'path' && round.circle);
+    assert.ok(Math.abs(round.circle.radius - 0.01) < 1e-12);
+
+    const texts = first.shapes.filter((s) => s.kind === 'text');
+    assert.equal(texts.length, 1);
+    const t = texts[0];
+    assert.ok(t.kind === 'text');
+    assert.equal(t.text, '110');
+    assert.equal(t.height, 0.0035);
+    assert.deepEqual(t.advances?.map((a) => Math.round(a * 1e4)), [15, 15, 22]);
+  });
+
+  it('writes the sheet as SVG in millimetres, text fitted to the length SolidWorks laid it out in', () => {
+    const svg = sheetSvg(drawing!.sheets[0]);
+    assert.match(svg, /viewBox="0 0 420 297"/);
+    assert.match(svg, /stroke="#ff0000"/);
+    // x 10 mm, y from the top: 297 - 20.
+    assert.match(svg, /M10 277L200 277/);
+    assert.match(svg, />110<\/text>/);
+    assert.match(svg, /textLength="5.2"/);
+  });
+
+  it('says so when a file keeps no sheet graphics', () => {
+    assert.equal(readDrawing([]), null);
+  });
+});

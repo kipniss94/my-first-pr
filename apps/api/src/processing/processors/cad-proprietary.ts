@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { JobResult, NativeCadDocument } from '@docuview/shared';
+import type { DrawingDocument, DrawingSheetDocument, JobResult, NativeCadDocument } from '@docuview/shared';
 import { ProcessingError, type ProcessorContext } from '../context.js';
 import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
@@ -9,6 +9,7 @@ import { findBrepSource, meshFromBrep } from '../sldprt/brep-mesh.js';
 import { findModelPartition, findParasolidPartitions, findPreviewPng, unwrapCodec, type PackageEntry } from '../sldprt/container.js';
 import { isBinaryXt, readXt } from '../sldprt/xt-reader.js';
 import { findDisplayMesh, measureMesh, toIndexedMesh, type IndexedMesh } from '../sldprt/display-list.js';
+import { readDrawing, sheetSvg, type Drawing } from '../sldprt/drawing.js';
 import { processOcct, writeNmg } from './cad-occt.js';
 
 /**
@@ -241,6 +242,76 @@ async function configurationMeshes(
   return { map, unavailable };
 }
 
+/**
+ * A SolidWorks drawing as one SVG per sheet (see sldprt/drawing.ts), with the
+ * picture SolidWorks saved of each sheet beside it. Null when the file keeps
+ * no sheet graphics — the preview path then shows what there is.
+ */
+async function processDrawing(ctx: ProcessorContext, entries: PackageEntry[], buffer: Buffer): Promise<JobResult | null> {
+  const { request } = ctx;
+  let drawing: Drawing | null = null;
+  try {
+    drawing = readDrawing(entries);
+  } catch (err) {
+    ctx.log('warn', `drawing sheets not read: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (!drawing || !drawing.sheets.some((sheet) => sheet.shapes.length > 0)) return null;
+  const info = inspectNativeCad(buffer, request.formatId, request.extension);
+  ctx.progress('preparing-geometry', 60);
+
+  const base = `/api/v1/files/${request.fileId}/assets`;
+  const sheets: DrawingSheetDocument[] = [];
+  for (const [k, sheet] of drawing.sheets.entries()) {
+    await fs.writeFile(path.join(request.assetsDir, `sheet-${k}.svg`), sheetSvg(sheet));
+    if (sheet.image) await fs.writeFile(path.join(request.assetsDir, `sheet-${k}.png`), sheet.image);
+    const shown = sheet.views.filter((view) => !view.hidden);
+    sheets.push({
+      name: sheet.name,
+      widthMm: Math.round(sheet.width * 10000) / 10,
+      heightMm: Math.round(sheet.height * 10000) / 10,
+      svg: `${base}/sheet-${k}.svg`,
+      picture: sheet.image ? `${base}/sheet-${k}.png` : null,
+      views: shown.length,
+      viewsDrawn: shown.filter((view) => view.drawn).length,
+      viewsFromPicture: shown.filter((view) => !view.drawn).length,
+      active: sheet.active,
+    });
+  }
+  const views = sheets.reduce((n, sheet) => n + sheet.views, 0);
+  const drawn = sheets.reduce((n, sheet) => n + sheet.viewsDrawn, 0);
+  const fromPicture = sheets.reduce((n, sheet) => n + sheet.viewsFromPicture, 0);
+  const texts = drawing.sheets.reduce((n, sheet) => n + sheet.shapes.filter((shape) => shape.kind === 'text').length, 0);
+  const document: DrawingDocument = {
+    application: info.application,
+    version: info.version,
+    sheets,
+    properties: info.properties,
+    note:
+      `${sheets.length} sheet${sheets.length === 1 ? '' : 's'} drawn from the file itself: frames, notes, dimensions and ${drawn} of ${views} view${views === 1 ? '' : 's'} from their own edges` +
+      (fromPicture > 0 ? `; ${fromPicture} shown from the picture SolidWorks saved, whose edges this viewer cannot place yet.` : '.'),
+  };
+  await fs.writeFile(path.join(request.assetsDir, 'drawing.json'), JSON.stringify(document));
+  ctx.log('info', `drawing: ${sheets.length} sheet(s), ${views} view(s), ${drawn} drawn, ${fromPicture} from the picture, ${texts} texts`);
+  ctx.progress('preparing-geometry', 95);
+  return {
+    kind: 'cad',
+    viewer: 'cad-drawing',
+    source: `${base}/drawing.json`,
+    meta: {
+      formatId: request.formatId,
+      application: info.application,
+      role: 'drawing',
+      sheets: sheets.length,
+      views,
+      viewsDrawn: drawn,
+      viewsFromPicture: fromPicture,
+      texts,
+      preview: sheets.find((sheet) => sheet.active)?.picture ?? sheets[0]?.picture ?? null,
+    },
+    warnings: [],
+  };
+}
+
 /** Beyond this, components saved inside an assembly are listed rather than drawn. */
 const MAX_EMBEDDED_TRIANGLES = 8_000_000;
 
@@ -418,6 +489,13 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
     const info = inspectNativeCad(buffer, request.formatId, request.extension);
     const assembly = await processAssembly(ctx, entries, info, await writePreview(ctx, entries, info));
     if (assembly) return assembly;
+  }
+
+  // A drawing: its sheets, drawn from what SolidWorks keeps for showing them.
+  // Its section bodies are Parasolid too and must not be taken for a part.
+  if (request.extension === 'slddrw') {
+    const drawing = await processDrawing(ctx, entries, buffer);
+    if (drawing) return drawing;
   }
 
   /* ------------------------------- exact B-rep ----------------------------- */
