@@ -4,6 +4,7 @@ import { SiteFooter, SiteHeader } from './SiteChrome';
 import { FormatTable, SupportLegend } from './Formats';
 import { AdSlot } from './AdSlot';
 import { Dropzone } from '@/components/upload/Dropzone';
+import { serverT } from '@/lib/i18n-server';
 
 export interface LandingSection {
   title: string;
@@ -30,7 +31,8 @@ interface LandingPageProps {
  * with real prose so search engines index something meaningful, and they carry
  * the same upload box as the home page — a visitor never has to navigate back.
  */
-export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limitations, faq }: LandingPageProps) {
+export async function LandingPage({ eyebrow, title, intro, kinds, capabilities, limitations, faq }: LandingPageProps) {
+  const { t } = await serverT();
   const faqJsonLd = {
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
@@ -64,7 +66,7 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
         <section aria-labelledby="capabilities" className="border-y border-line bg-ink-950/60">
           <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
             <h2 id="capabilities" className="text-2xl font-semibold tracking-tight text-mist-100">
-              What you can do
+              {t('What you can do')}
             </h2>
             <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {capabilities.map((item) => (
@@ -79,11 +81,10 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
 
         <section aria-labelledby="formats" className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
           <h2 id="formats" className="text-2xl font-semibold tracking-tight text-mist-100">
-            Formats and current status
+            {t('Formats and current status')}
           </h2>
           <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-mist-400">
-            This table is generated from the same registry that routes uploads, so it cannot drift
-            from what the app really does.
+            {t('This table is generated from the same registry that routes uploads, so it cannot drift from what the app really does.')}
           </p>
           <div className="mt-6">
             <FormatTable kinds={kinds} />
@@ -94,7 +95,7 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
         <section aria-labelledby="limits" className="border-t border-line bg-ink-950/60">
           <div className="mx-auto max-w-7xl px-4 py-14 sm:px-6">
             <h2 id="limits" className="text-2xl font-semibold tracking-tight text-mist-100">
-              Known limitations
+              {t('Known limitations')}
             </h2>
             <ul className="mt-6 grid max-w-4xl gap-3">
               {limitations.map((limitation) => (
@@ -112,7 +113,7 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
 
         <section aria-labelledby="faq" className="mx-auto max-w-3xl px-4 py-14 sm:px-6">
           <h2 id="faq" className="text-2xl font-semibold tracking-tight text-mist-100">
-            Questions
+            {t('Questions')}
           </h2>
           <dl className="mt-8 space-y-6">
             {faq.map((item) => (
@@ -123,7 +124,7 @@ export function LandingPage({ eyebrow, title, intro, kinds, capabilities, limita
             ))}
           </dl>
           <Link href="/" className="btn btn-primary mt-8">
-            Open a file now
+            {t('Open a file now')}
           </Link>
         </section>
       </main>

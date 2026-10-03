@@ -172,9 +172,11 @@ export const FORMATS: FormatDescriptor[] = [
     extensions: ['sldprt', 'sldasm', 'slddrw'],
     mimeTypes: ['application/octet-stream'],
     pipeline: 'server',
-    support: 'preview',
+    // Read without SOLIDWORKS: parts and assemblies from the display meshes
+    // and Parasolid bodies inside them, drawings from their own sheet graphics.
+    support: 'full',
     processor: 'cad-proprietary',
-    note: 'Opens from the preview and properties stored in the file. Full geometry needs a server-side converter.',
+    note: 'Parts and assemblies open in 3D from the file itself (each part placed where the assembly puts it); drawings open as vector sheets. No SOLIDWORKS needed.',
     group: 'CAD',
   },
   {

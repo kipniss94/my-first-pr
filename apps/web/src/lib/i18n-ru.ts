@@ -631,6 +631,72 @@ export const RU: Record<string, string> = {
   "We couldn't open this PDF.": 'Не удалось открыть PDF.',
   'The document may have expired. Try uploading it again.': 'Документ мог устареть. Загрузите его ещё раз.',
   "We couldn't load this document.": 'Не удалось загрузить документ.',
+
+  /* --------------------------- site pages ----------------------------- */
+  'Last updated: {when}': 'Обновлено: {when}',
+  'This is a placeholder document.': 'Это черновой документ.',
+  'It describes how the stage 1 build actually behaves, but it has not been reviewed by a lawyer. Replace it with a real policy before running this service publicly.':
+    'Он описывает, как на самом деле работает эта версия, но юрист его не проверял. Замените его настоящим документом, прежде чем открывать службу для всех.',
+  'What you can do': 'Что можно делать',
+  'Formats and current status': 'Форматы и их состояние',
+  'This table is generated from the same registry that routes uploads, so it cannot drift from what the app really does.':
+    'Таблица строится из того же реестра, по которому направляются загрузки, поэтому она не расходится с тем, что программа умеет на деле.',
+  'Known limitations': 'Известные ограничения',
+  Questions: 'Вопросы',
+  'Open a file now': 'Открыть файл',
+  'Supported formats': 'Поддерживаемые форматы',
+  '3D models': '3D-модели',
+  'Supported file formats and their current status': 'Поддерживаемые форматы файлов и их состояние',
+  Format: 'Формат',
+  Extensions: 'Расширения',
+  Status: 'Состояние',
+  'How it opens': 'Как открывается',
+  Supported: 'Поддерживается',
+  Partial: 'Частично',
+  'Needs converter': 'Нужен конвертер',
+  'Not yet': 'Пока нет',
+  'Opens directly, verified against real files.': 'Открывается сразу, проверено на настоящих файлах.',
+  'Opens, but some entities or features are not rendered.': 'Открывается, но часть объектов или возможностей не отображается.',
+  'Opens only when the matching converter is installed on the server.': 'Открывается, только если на сервере установлен подходящий конвертер.',
+  'Opens from the preview and properties stored inside the file. Measurable geometry needs a server-side converter.':
+    'Открывается по сохранённому в файле эскизу и свойствам. Для измеримой геометрии нужен конвертер на сервере.',
+  'Recognised and named, but not rendered. Export to STEP instead.': 'Распознаётся и называется, но не отображается. Экспортируйте в STEP.',
+  'Parsed directly in the browser.': 'Разбирается прямо в браузере.',
+  'Prepared by the processing service.': 'Готовится службой обработки.',
+  'Not rendered yet.': 'Пока не отображается.',
+  'Plain text': 'Простой текст',
+  Image: 'Изображение',
+  '2D entities (lines, arcs, polylines, circles, splines, blocks, text anchors).':
+    '2D-объекты (отрезки, дуги, полилинии, окружности, сплайны, блоки, надписи).',
+  'All sheets, merged cells, number formats and basic styling. Macros are never executed.':
+    'Все листы, объединённые ячейки, форматы чисел и основное оформление. Макросы не запускаются.',
+  'B-Rep tessellated server side by OpenCascade; assembly tree preserved.': 'B-Rep разбивается на треугольники на сервере через OpenCascade; дерево сборки сохраняется.',
+  'BIM support is scheduled for stage 2 (web-ifc).': 'Поддержка BIM запланирована на второй этап (web-ifc).',
+  'Binary FBX 7.x. Animation and advanced materials are ignored.': 'Двоичный FBX 7.x. Анимация и сложные материалы не учитываются.',
+  'Binary and ASCII, parsed in a worker.': 'Двоичный и текстовый, разбор в фоновом потоке.',
+  'Converted by LibreOffice.': 'Преобразуется через LibreOffice.',
+  'Converted to XLSX by LibreOffice first.': 'Сначала преобразуется в XLSX через LibreOffice.',
+  'Geometry only, with no preview inside the file: needs a server-side converter.': 'Только геометрия, без эскиза в файле: нужен конвертер на сервере.',
+  'Groups become tree nodes. External .mtl files are not fetched.': 'Группы становятся узлами дерева. Внешние файлы .mtl не подгружаются.',
+  'Native OpenCascade shape format.': 'Родной формат тел OpenCascade.',
+  'Needs an external DWG→DXF converter (ODA File Converter or LibreDWG).': 'Нужен внешний конвертер DWG→DXF (ODA File Converter или LibreDWG).',
+  'Opens from the preview and properties stored in the file. Full geometry needs a server-side converter.':
+    'Открывается по сохранённому в файле эскизу и свойствам. Для полной геометрии нужен конвертер на сервере.',
+  'Opens from the preview stored in the file. Export IFC for geometry (IFC is scheduled for stage 2).':
+    'Открывается по сохранённому в файле эскизу. Для геометрии экспортируйте IFC (IFC — на втором этапе).',
+  'Opens from the preview stored in the file. Full geometry needs a server-side converter.':
+    'Открывается по сохранённому в файле эскизу. Для полной геометрии нужен конвертер на сервере.',
+  'Opens from the preview stored in the file. Tessellated JT geometry is scheduled for stage 2.':
+    'Открывается по сохранённому в файле эскизу. Геометрия JT — на втором этапе.',
+  'Parts and assemblies open in 3D from the file itself (each part placed where the assembly puts it); drawings open as vector sheets. No SOLIDWORKS needed.':
+    'Детали и сборки открываются в 3D из самого файла (каждая деталь — там, где её ставит сборка); чертежи — векторными листами. SOLIDWORKS не нужен.',
+  'Rendered by PDF.js directly from the stored file.': 'Отрисовывается PDF.js прямо из сохранённого файла.',
+  'Rendered through LibreOffice for layout fidelity; a native OOXML fallback is used when LibreOffice is absent.':
+    'Рисуется через LibreOffice для точной вёрстки; без LibreOffice — встроенным разбором OOXML.',
+  'Self-contained files only (embedded or binary buffers).': 'Только самодостаточные файлы (встроенные или двоичные буферы).',
+  'Surfaces are tessellated; free-standing curves are not rendered.': 'Поверхности разбиваются на треугольники; отдельные кривые не отображаются.',
+  'Text, headings, lists, tables and inline images. Optional exact page view via LibreOffice.':
+    'Текст, заголовки, списки, таблицы и встроенные картинки. По желанию — точный вид страниц через LibreOffice.',
 };
 
 /** Messages with names or numbers in them: the first pattern that matches is used. */

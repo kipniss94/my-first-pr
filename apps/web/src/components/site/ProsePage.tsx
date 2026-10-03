@@ -1,3 +1,4 @@
+import { serverT } from '@/lib/i18n-server';
 import { SiteFooter, SiteHeader } from './SiteChrome';
 
 interface ProsePageProps {
@@ -8,7 +9,8 @@ interface ProsePageProps {
 }
 
 /** Shared shell for the text-only pages (about, privacy, terms). */
-export function ProsePage({ title, subtitle, updated, children }: ProsePageProps) {
+export async function ProsePage({ title, subtitle, updated, children }: ProsePageProps) {
+  const { t } = await serverT();
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
@@ -16,7 +18,7 @@ export function ProsePage({ title, subtitle, updated, children }: ProsePageProps
         <article className="mx-auto max-w-3xl px-4 py-14 sm:px-6 sm:py-20">
           <h1 className="text-balance text-3xl font-semibold tracking-tight text-mist-100 sm:text-4xl">{title}</h1>
           {subtitle && <p className="mt-4 text-[17px] leading-relaxed text-mist-300">{subtitle}</p>}
-          {updated && <p className="mt-3 text-xs text-mist-500">Last updated {updated}</p>}
+          {updated && <p className="mt-3 text-xs text-mist-500">{t('Last updated: {when}', { when: updated })}</p>}
           <div className="mt-10 space-y-8">{children}</div>
         </article>
       </main>
@@ -37,13 +39,15 @@ export function Section({ title, children }: { title: string; children: React.Re
 }
 
 /** Placeholder banner: these documents are scaffolding, not legal advice. */
-export function PlaceholderNotice() {
+export async function PlaceholderNotice() {
+  const { t } = await serverT();
   return (
     <div className="rounded-xl border border-warn/35 bg-warn/10 px-4 py-3">
-      <p className="text-sm font-medium text-mist-100">This is a placeholder document.</p>
+      <p className="text-sm font-medium text-mist-100">{t('This is a placeholder document.')}</p>
       <p className="mt-1 text-[13px] leading-relaxed text-mist-400">
-        It describes how the stage 1 build actually behaves, but it has not been reviewed by a
-        lawyer. Replace it with a real policy before running this service publicly.
+        {t(
+          'It describes how the stage 1 build actually behaves, but it has not been reviewed by a lawyer. Replace it with a real policy before running this service publicly.',
+        )}
       </p>
     </div>
   );
