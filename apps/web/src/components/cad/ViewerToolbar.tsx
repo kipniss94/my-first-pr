@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DisplayMode, StandardView, ToolMode } from '@/lib/cad/types';
+import { useT } from '@/lib/prefs';
 
 interface ViewerToolbarProps {
   tool: ToolMode;
@@ -38,6 +39,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
   const viewsRef = useRef<HTMLDivElement>(null);
   const viewsButtonRef = useRef<HTMLButtonElement>(null);
   const [menuPosition, setMenuPosition] = useState<{ bottom: number; right: number } | null>(null);
+  const { t } = useT();
 
   /*
    * The toolbar scrolls horizontally on narrow screens, and an `overflow`
@@ -85,9 +87,9 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
 
   return (
     <div className="flex h-13 shrink-0 items-center gap-1 overflow-x-auto border-t border-line bg-ink-850 px-2 py-2">
-      <Group label="Tools">
+      <Group label={t('Tools')}>
         <IconButton
-          label="Select"
+          label={t('Select')}
           active={props.tool === 'select'}
           onClick={() => props.onToolChange('select')}
           testId="tool-select"
@@ -125,9 +127,9 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
 
       <Divider />
 
-      <Group label="Section">
+      <Group label={t('Section')}>
         <IconButton
-          label="Section plane"
+          label={t('Section plane')}
           active={props.sectionEnabled}
           onClick={() => props.onSectionToggle(!props.sectionEnabled)}
           testId="toolbar-section"
@@ -139,23 +141,23 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
 
       <Divider />
 
-      <Group label="Display">
+      <Group label={t('Display')}>
         <Segmented
           value={props.displayMode}
           onChange={props.onDisplayModeChange}
           options={[
-            { value: 'shaded', label: 'Shaded' },
-            { value: 'shaded-edges', label: 'Edges' },
-            { value: 'wireframe', label: 'Wire' },
+            { value: 'shaded', label: t('Shaded') },
+            { value: 'shaded-edges', label: t('Edges') },
+            { value: 'wireframe', label: t('Wire') },
           ]}
         />
         {props.edgesUnavailable && props.displayMode === 'shaded-edges' && (
-          <span className="ml-1 whitespace-nowrap text-[11px] text-warn">Too dense for edges</span>
+          <span className="ml-1 whitespace-nowrap text-[11px] text-warn">{t('Too dense for edges')}</span>
         )}
       </Group>
 
       <div className="hidden items-center gap-2 pl-2 md:flex">
-        <span className="text-[11px] text-mist-500">Opacity</span>
+        <span className="text-[11px] text-mist-500">{t('Opacity')}</span>
         <input
           type="range"
           min={0.15}
@@ -164,22 +166,22 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           value={props.opacity}
           onChange={(event) => props.onOpacityChange(Number(event.target.value))}
           className="w-20 accent-accent"
-          aria-label="Part opacity"
+          aria-label={t('Part opacity')}
         />
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
         {props.fps !== null && props.fps > 0 && (
-          <span className="mr-1 hidden font-mono text-[11px] tabular-nums text-mist-500 lg:inline" title="Frames per second">
-            {props.fps} fps
+          <span className="mr-1 hidden font-mono text-[11px] tabular-nums text-mist-500 lg:inline" title={t('Frames per second')}>
+            {t('{n} fps', { n: props.fps })}
           </span>
         )}
 
-        <IconButton label="Toggle grid" active={props.gridVisible} onClick={() => props.onGridToggle(!props.gridVisible)}>
+        <IconButton label={t('Toggle grid')} active={props.gridVisible} onClick={() => props.onGridToggle(!props.gridVisible)}>
           <path d="M2.5 6h11M2.5 10h11M6 2.5v11M10 2.5v11" stroke="currentColor" strokeWidth="1.3" />
         </IconButton>
 
-        <IconButton label="Save a PNG snapshot" onClick={props.onSnapshot}>
+        <IconButton label={t('Save a PNG snapshot')} onClick={props.onSnapshot}>
           <rect x="2.5" y="4.5" width="11" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
           <circle cx="8" cy="8.5" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.4" />
         </IconButton>
@@ -194,7 +196,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
             aria-haspopup="menu"
             data-testid="views-button"
           >
-            Views
+            {t('Views')}
             <svg viewBox="0 0 12 12" className={`h-3 w-3 transition-transform ${viewsOpen ? 'rotate-180' : ''}`} aria-hidden="true">
               <path d="M3 4.5 6 7.5l3-3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
@@ -217,7 +219,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
                   data-testid={`view-${view.id}`}
                   className="flex w-full items-center justify-between px-3 py-1.5 text-left text-[13px] text-mist-200 hover:bg-ink-700"
                 >
-                  {view.label}
+                  {t(view.label)}
                   <span className="font-mono text-[10px] text-mist-500">{view.short}</span>
                 </button>
               ))}
@@ -226,10 +228,10 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         </div>
 
         <button type="button" onClick={props.onFit} className="btn btn-subtle" data-testid="fit-button">
-          Fit
+          {t('Fit')}
         </button>
         <button type="button" onClick={props.onReset} className="btn btn-ghost hidden sm:inline-flex">
-          Reset
+          {t('Reset')}
         </button>
       </div>
     </div>

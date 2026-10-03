@@ -5,6 +5,8 @@ import type { DrawingDocument } from '@docuview/shared';
 import { apiUrl, fetchApi } from '@/lib/api';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
+import { unitLabel } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 
 interface DrawingViewerProps {
   /** URL of the `drawing.json` the processor wrote. */
@@ -30,6 +32,7 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
   const [drawing, setDrawing] = useState<DrawingDocument | null>(null);
   const [failed, setFailed] = useState(false);
   const [sheetIndex, setSheetIndex] = useState(0);
+  const { t } = useT();
   const [markup, setMarkup] = useState<Record<number, string>>({});
   const [showPicture, setShowPicture] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -205,7 +208,7 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-ink-850 px-3">
           {drawing && drawing.sheets.length > 1 && (
-            <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Sheets">
+            <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label={t('Sheets')}>
               {drawing.sheets.map((s, k) => (
                 <button
                   key={`${s.name}-${k}`}
@@ -225,7 +228,7 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
           )}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <span className="hidden font-mono text-[11px] text-mist-500 sm:inline">
-              {sheet ? `${sheet.widthMm}×${sheet.heightMm} mm · ${Math.round(zoom * 100)}%` : ''}
+              {sheet ? `${sheet.widthMm}×${sheet.heightMm} ${unitLabel('mm')} · ${Math.round(zoom * 100)}%` : ''}
             </span>
             {sheet?.picture && (
               <button
@@ -233,34 +236,34 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
                 onClick={() => setShowPicture((on) => !on)}
                 aria-pressed={showPicture}
                 className={`btn ${showPicture ? 'btn-primary' : 'btn-ghost'}`}
-                title="Compare with the picture SolidWorks saved of this sheet"
+                title={t('Compare with the picture SolidWorks saved of this sheet')}
                 data-testid="drawing-picture"
               >
-                SolidWorks picture
+                {t('SolidWorks picture')}
               </button>
             )}
             <button type="button" onClick={fit} className="btn btn-subtle" data-testid="drawing-fit">
-              Fit
+              {t('Fit')}
             </button>
             {sheet && (
               <a
                 href={apiUrl(sheet.svg)}
                 download={`${fileName.replace(/\.[^.]+$/, '')} - ${sheet.name}.svg`}
                 className="btn btn-ghost"
-                title="Download this sheet as SVG"
+                title={t('Download this sheet as SVG')}
               >
                 SVG
               </a>
             )}
             <button type="button" onClick={() => setInfoOpen((open) => !open)} className="btn btn-ghost">
-              Info
+              {t('Info')}
             </button>
           </div>
         </div>
 
         <div
           ref={paneRef}
-          className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden bg-[#3a4150] active:cursor-grabbing"
+          className="relative min-h-0 flex-1 cursor-grab touch-none overflow-hidden bg-[var(--sheet-surround)] active:cursor-grabbing"
           onPointerDown={(event) => {
             if (!box.current) return;
             (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -285,7 +288,7 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={apiUrl(sheet.picture)}
-              alt={`${sheet.name} as SolidWorks saved it`}
+              alt={t('{name} as SolidWorks saved it', { name: sheet.name })}
               className="absolute inset-0 h-full w-full object-contain"
               draggable={false}
             />
@@ -298,7 +301,7 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
             />
           )}
           {!current && !showPicture && (
-            <div className="absolute inset-0 grid place-items-center text-sm text-mist-400">Drawing the sheet…</div>
+            <div className="absolute inset-0 grid place-items-center text-sm text-mist-400">{t('Drawing the sheet…')}</div>
           )}
         </div>
       </div>
@@ -308,42 +311,42 @@ export function DrawingViewer({ source, fileName, onProgress, onReady, onThumbna
           <section className="border-b border-line p-4">
             <div className="flex items-center gap-2">
               <span className="inline-flex items-center rounded-md border border-ok/40 bg-ok/10 px-2 py-0.5 text-[11px] font-medium text-ok">
-                Drawing
+                {t('Drawing')}
               </span>
               <span className="text-[13px] font-medium text-mist-200">
                 {drawing.application}
                 {drawing.version && drawing.version !== drawing.application ? ` · ${drawing.version}` : ''}
               </span>
             </div>
-            <p className="mt-3 text-[12px] leading-relaxed text-mist-400">{drawing.note}</p>
+            <p className="mt-3 text-[12px] leading-relaxed text-mist-400">{t(drawing.note)}</p>
             <dl className="mt-3 grid grid-cols-[1fr_auto] gap-y-1 text-[12px]" data-testid="drawing-stats">
-              <dt className="text-mist-500">Sheet</dt>
+              <dt className="text-mist-500">{t('Sheet')}</dt>
               <dd className="text-right text-mist-200">
-                {sheet.name} · {sheet.widthMm}×{sheet.heightMm} mm
+                {sheet.name} · {sheet.widthMm}×{sheet.heightMm} {unitLabel('mm')}
               </dd>
-              <dt className="text-mist-500">Views drawn</dt>
+              <dt className="text-mist-500">{t('Views drawn')}</dt>
               <dd className="text-right text-mist-200">
-                {sheet.viewsDrawn} of {sheet.views}
+                {t('{index} of {count}', { index: sheet.viewsDrawn, count: sheet.views })}
               </dd>
               {sheet.viewsFromPicture > 0 && (
                 <>
-                  <dt className="text-mist-500">From the picture</dt>
+                  <dt className="text-mist-500">{t('From the picture')}</dt>
                   <dd className="text-right text-warn">{sheet.viewsFromPicture}</dd>
                 </>
               )}
             </dl>
             <p className="mt-3 text-[11px] leading-relaxed text-mist-500">
-              Wheel to zoom, drag to move, F or double-click to fit.
+              {t('Wheel to zoom, drag to move, F or double-click to fit.')}
             </p>
           </section>
           {drawing.properties.length > 0 && (
             <section className="p-4">
-              <h2 className="field-label">Document properties</h2>
+              <h2 className="field-label">{t('Document properties')}</h2>
               <dl className="mt-3 space-y-2">
                 {drawing.properties.map((property) => (
                   <div key={property.name} className="grid grid-cols-[7.5rem_1fr] gap-2">
                     <dt className="truncate text-[12px] text-mist-500" title={property.name}>
-                      {property.name}
+                      {t(property.name)}
                     </dt>
                     <dd className="break-words text-[12px] text-mist-200">{property.value}</dd>
                   </div>

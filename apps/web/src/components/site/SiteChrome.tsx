@@ -1,4 +1,8 @@
+'use client';
+
 import Link from 'next/link';
+import { useT } from '@/lib/prefs';
+import { HeaderControls } from './HeaderControls';
 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -27,30 +31,35 @@ const NAV = [
 ];
 
 export function SiteHeader() {
+  const { t } = useT();
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-ink-900/85 backdrop-blur-md">
       <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-6 px-4 sm:px-6">
         <Logo />
-        <nav aria-label="Main" className="hidden items-center gap-1 md:flex">
+        <nav aria-label={t('Main')} className="hidden items-center gap-1 md:flex">
           {NAV.map((item) => (
             <Link
               key={item.href}
               href={item.href}
               className="rounded-lg px-3 py-2 text-[13px] font-medium text-mist-300 transition-colors hover:bg-ink-800 hover:text-mist-100"
             >
-              {item.label}
+              {t(item.label)}
             </Link>
           ))}
         </nav>
-        <Link href="/" className="btn btn-primary">
-          Open a file
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link href="/" className="btn btn-primary">
+            {t('Open a file')}
+          </Link>
+          <HeaderControls />
+        </div>
       </div>
     </header>
   );
 }
 
 export function SiteFooter() {
+  const { t } = useT();
   return (
     <footer className="border-t border-line bg-ink-950">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6">
@@ -58,8 +67,9 @@ export function SiteFooter() {
           <div className="max-w-sm">
             <Logo />
             <p className="mt-4 text-sm leading-relaxed text-mist-400">
-              A fast browser viewer for engineering and office documents. Files are processed on the
-              server, kept only as long as you need them, and never executed.
+              {t(
+                'A fast browser viewer for engineering and office documents. Files are processed on the server, kept only as long as you need them, and never executed.',
+              )}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-10 sm:grid-cols-3">
@@ -90,8 +100,8 @@ export function SiteFooter() {
           </div>
         </div>
         <p className="mt-10 border-t border-line pt-6 text-xs text-mist-500">
-          © {new Date().getFullYear()} DocuView. Stage 1 preview — see the About page for what is and
-          is not supported today.
+          © {new Date().getFullYear()} DocuView.{' '}
+          {t('Stage 1 preview — see the About page for what is and is not supported today.')}
         </p>
       </div>
     </footer>
@@ -99,14 +109,15 @@ export function SiteFooter() {
 }
 
 function FooterColumn({ title, links }: { title: string; links: { href: string; label: string }[] }) {
+  const { t } = useT();
   return (
     <div>
-      <h2 className="field-label">{title}</h2>
+      <h2 className="field-label">{t(title)}</h2>
       <ul className="mt-3 space-y-2">
         {links.map((link) => (
           <li key={`${link.href}${link.label}`}>
             <Link href={link.href} className="link-quiet text-sm">
-              {link.label}
+              {t(link.label)}
             </Link>
           </li>
         ))}

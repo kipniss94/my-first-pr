@@ -27,15 +27,18 @@ const SIZES: Record<AdPlacement, { width: number; height: number; label: string 
   footer: { width: 728, height: 90, label: 'Banner' },
 };
 
-export function AdSlot({ placement, className = '' }: AdSlotProps) {
-  const size = SIZES[placement];
+/** A single switch decides whether any placement renders. Ads are off by default. */
+function useAdsEnabled(): boolean {
   const [enabled, setEnabled] = useState(false);
-
   useEffect(() => {
-    // A single switch decides whether any placement renders. Ads are off by
-    // default so the MVP ships without them.
     setEnabled(process.env.NEXT_PUBLIC_ADS_ENABLED === 'true');
   }, []);
+  return enabled;
+}
+
+export function AdSlot({ placement, className = '' }: AdSlotProps) {
+  const size = SIZES[placement];
+  const enabled = useAdsEnabled();
 
   if (!enabled) return null;
 
@@ -56,9 +59,12 @@ export function AdSlot({ placement, className = '' }: AdSlotProps) {
 /**
  * Wrapper for the viewer's right rail. Ads never sit on top of the 3D canvas or
  * the document page — only beside them, and only when the viewport is wide
- * enough that nothing has to shrink.
+ * enough that nothing has to shrink. With ads off the rail takes no room at
+ * all: an empty column beside a model is space the model should have.
  */
 export function ViewerAdRail() {
+  const enabled = useAdsEnabled();
+  if (!enabled) return null;
   return (
     <div className="hidden 2xl:flex 2xl:w-[316px] 2xl:shrink-0 2xl:flex-col 2xl:items-center 2xl:gap-4 2xl:border-l 2xl:border-line 2xl:bg-ink-900 2xl:p-2">
       <AdSlot placement="sidebar" />

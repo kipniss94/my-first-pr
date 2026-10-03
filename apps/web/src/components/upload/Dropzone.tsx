@@ -6,6 +6,7 @@ import { ACCEPTED_EXTENSIONS, type CapabilitiesResponse } from '@docuview/shared
 import { getCapabilities } from '@/lib/api';
 import { formatBytes, formatDuration } from '@/lib/format';
 import { droppedFiles, FALLBACK_MAX_BYTES, openFiles } from '@/lib/open';
+import { useT } from '@/lib/prefs';
 
 const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.join(',');
 
@@ -13,7 +14,8 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
+  const [error, setError] = useState<{ message: string; hint?: string }[] | null>(null);
+  const { t, tp, tx } = useT();
   const [capabilities, setCapabilities] = useState<CapabilitiesResponse | null>(null);
   const [serviceDown, setServiceDown] = useState(false);
   const dragDepth = useRef(0);
@@ -46,14 +48,7 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
           replace ? router.replace(`/viewer?s=${sessionId}`) : router.push(`/viewer?s=${sessionId}`),
       });
       if (outcome.opened.length > 0 || outcome.refused.length === 0) return;
-      setError(
-        outcome.refused.length === 1
-          ? outcome.refused[0]
-          : {
-              message: `None of the ${outcome.refused.length} files could be opened.`,
-              hint: outcome.refused.map((r) => r.message).join(' '),
-            },
-      );
+      setError(outcome.refused);
     },
     [maxBytes, router],
   );
@@ -87,7 +82,7 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
       <div
         role="button"
         tabIndex={0}
-        aria-label="Upload a document"
+        aria-label={t('Upload a document')}
         onClick={() => inputRef.current?.click()}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
@@ -121,14 +116,16 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
         </div>
 
         <p className={`mt-5 font-semibold tracking-tight text-mist-100 ${compact ? 'text-lg' : 'text-xl sm:text-2xl'}`}>
-          {dragging ? 'Drop to open it' : 'Drag & drop your file here'}
+          {dragging ? t('Drop to open it') : t('Drag & drop your file here')}
         </p>
         <p className="mt-2 text-sm text-mist-400">
-          or{' '}
-          <span className="font-medium text-accent underline decoration-accent/40 underline-offset-4">
-            browse files
-          </span>{' '}
-          on your device
+          {tx('or {browse} on your device', {
+            browse: (
+              <span className="font-medium text-accent underline decoration-accent/40 underline-offset-4">
+                {t('browse files')}
+              </span>
+            ),
+          })}
         </p>
 
         <input
@@ -151,24 +148,39 @@ export function Dropzone({ compact = false }: { compact?: boolean }) {
           data-testid="upload-error"
           className="mt-4 rounded-xl border border-danger/35 bg-danger/10 px-4 py-3"
         >
-          <p className="text-sm font-medium text-mist-100">{error.message}</p>
-          {error.hint && <p className="mt-1 text-[13px] text-mist-400">{error.hint}</p>}
+          <p className="text-sm font-medium text-mist-100">
+            {error.length === 1
+              ? t(error[0].message)
+              : tp(
+                  error.length,
+                  ['The file could not be opened.', 'None of the {n} files could be opened.'],
+                  ['Файл не удалось открыть.', 'Ни один из {n} файлов не удалось открыть.', 'Ни один из {n} файлов не удалось открыть.'],
+                )}
+          </p>
+          {(error.length === 1 ? error[0].hint : error.map((r) => t(r.message)).join(' ')) && (
+            <p className="mt-1 text-[13px] text-mist-400">
+              {error.length === 1 ? t(error[0].hint ?? '') : error.map((r) => t(r.message)).join(' ')}
+            </p>
+          )}
         </div>
       )}
 
       {serviceDown && (
         <div role="alert" className="mt-4 rounded-xl border border-warn/35 bg-warn/10 px-4 py-3">
-          <p className="text-sm font-medium text-mist-100">The document service isn&apos;t responding.</p>
+          <p className="text-sm font-medium text-mist-100">{t('The document service isn’t responding.')}</p>
           <p className="mt-1 text-[13px] text-mist-400">
-            Make sure the API is running (<code className="font-mono text-mist-300">npm run dev</code> starts both
-            parts).
+            {tx('Start it with {command}, which runs both halves of the app.', {
+              command: <code className="font-mono text-mist-300">Start-DocuView.bat</code>,
+            })}
           </p>
         </div>
       )}
 
       <p className="mt-4 text-center text-xs text-mist-500">
-        Up to {formatBytes(maxBytes)} per file · deleted automatically after{' '}
-        {formatDuration(capabilities?.retentionSeconds ?? 3600)} · no account needed
+        {t('Up to {size} per file · deleted automatically after {time} · no account needed', {
+          size: formatBytes(maxBytes),
+          time: formatDuration(capabilities?.retentionSeconds ?? 3600),
+        })}
       </p>
     </div>
   );

@@ -1,19 +1,24 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { commonFolder, pathSegments, type AssemblyState, type NativeCadDocument } from '@docuview/shared';
 import { apiUrl, fetchApi } from '@/lib/api';
-import { useAssembly, type ComponentView } from '@/lib/assembly';
-import { filesIn } from '@/lib/open';
+import { useAssembly } from '@/lib/assembly';
+import { decimal, formatCount, unitLabel } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
+import { ComponentsPanel, type Storage } from './ComponentsPanel';
 
 const CadViewer = dynamic(() => import('./CadViewer').then((m) => m.CadViewer), {
   ssr: false,
-  loading: () => (
-    <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-mist-400">Loading viewer…</div>
-  ),
+  loading: () => <LoadingViewer />,
 });
+
+function LoadingViewer() {
+  const { t } = useT();
+  return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-mist-400">{t('Loading viewer…')}</div>;
+}
 
 interface NativeCadViewerProps {
   /** URL of the `native.json` the processor wrote. */
@@ -30,23 +35,6 @@ interface NativeCadViewerProps {
   onReady(): void;
   /** Receives the stored preview, which is this document's workspace card. */
   onThumbnail?(source: string): void;
-}
-
-/** The folder that held the assembly and all its parts, as SolidWorks recorded them. */
-interface Storage {
-  name: string;
-  /** Folders between it and the assembly's own folder. */
-  levelsUp: number;
-  /** Its depth in the recorded paths, to show each part's place below it. */
-  depth: number;
-  path: string[];
-}
-
-/** Where a part was kept: below the common folder when it was there, else its whole folder. */
-function keptIn(originalPath: string, storage: Storage): string {
-  const folder = pathSegments(originalPath).slice(0, -1);
-  const inside = commonFolder([storage.path.join('/') + '/x', originalPath]).length === storage.depth;
-  return (inside ? [storage.name, ...folder.slice(storage.depth)] : folder).join('\\');
 }
 
 const LAYOUT_NOTE =
@@ -73,6 +61,7 @@ export function NativeCadViewer({
 }: NativeCadViewerProps) {
   const [document, setDocument] = useState<NativeCadDocument | null>(null);
   const [failed, setFailed] = useState(false);
+  const { t } = useT();
   const { components, renderable, counts, add, rejected, dismissRejected } = useAssembly(jobId, assembly, {
     recorded: recordedPath,
     here: sourcePath,
@@ -118,7 +107,7 @@ export function NativeCadViewer({
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center gap-3 text-sm text-mist-400">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
-        Reading the document…
+        {t('Reading the document…')}
       </div>
     );
   }
@@ -157,7 +146,7 @@ export function NativeCadViewer({
 
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col bg-[#0e131b]">
+      <div className="flex min-w-0 flex-1 flex-col bg-[var(--viewport-bg)]">
         {showGeometry ? (
           <CadViewer
             source={document.geometry3d ?? null}
@@ -202,6 +191,7 @@ export function NativeCadViewer({
 
 function PreviewStage({ document, fileName }: { document: NativeCadDocument; fileName: string }) {
   const [zoomed, setZoomed] = useState(false);
+  const { t } = useT();
 
   if (!document.preview) {
     return (
@@ -211,11 +201,12 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
           <path d="m4 5.5 8 3.5 8-3.5M12 9v13" strokeLinejoin="round" />
         </svg>
         <p className="mt-4 max-w-md text-[15px] font-medium text-mist-200">
-          This {document.application} document has no preview saved inside it.
+          {t('This {application} document has no preview saved inside it.', { application: document.application })}
         </p>
         <p className="mt-2 max-w-md text-sm leading-relaxed text-mist-400">
-          Its properties are listed on the right. To see the model itself, add a STEP export or ask your
-          administrator to configure a CAD converter on the server.
+          {t(
+            'Its properties are listed on the right. To see the model itself, add a STEP export or ask your administrator to configure a CAD converter on the server.',
+          )}
         </p>
       </div>
     );
@@ -229,7 +220,7 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={apiUrl(document.preview.url)}
-        alt={`Preview of ${fileName} as saved by ${document.application}`}
+        alt={t('Preview of {name} as saved by {application}', { name: fileName, application: document.application })}
         width={document.preview.width}
         height={document.preview.height}
         data-testid="native-preview"
@@ -253,6 +244,7 @@ function GeometryNotice({
   showingGeometry: boolean;
   placed: boolean;
 }) {
+  const { t } = useT();
   return (
     <section className="border-b border-line p-4">
       <div className="flex items-center gap-2">
@@ -261,7 +253,7 @@ function GeometryNotice({
             showingGeometry ? 'border-ok/40 bg-ok/10 text-ok' : 'border-accent/40 bg-accent/10 text-accent-bright'
           }`}
         >
-          {showingGeometry ? 'Geometry' : 'Preview'}
+          {showingGeometry ? t('Geometry') : t('Preview')}
         </span>
         <span className="text-[13px] font-medium text-mist-200">
           {document.application}
@@ -271,11 +263,13 @@ function GeometryNotice({
       <p className="mt-3 text-[12px] leading-relaxed text-mist-400">
         {showingGeometry
           ? placed
-            ? `Every part stands where the assembly puts it. ${document.note}`
+            ? `${t('Every part stands where the assembly puts it.')} ${t(document.note)}`
             : document.geometry3d
-              ? document.note
-              : 'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.'
-          : document.note}
+              ? t(document.note)
+              : t(
+                  'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.',
+                )
+          : t(document.note)}
       </p>
     </section>
   );
@@ -295,510 +289,39 @@ function MeasuredSize({ measured }: { measured: NonNullable<NativeCadDocument['m
     ['Y', measured.sizeMm.y],
     ['Z', measured.sizeMm.z],
   ];
+  const { t } = useT();
   return (
     <section className="border-b border-line p-4" data-testid="native-measured">
-      <h2 className="field-label">Measured size</h2>
+      <h2 className="field-label">{t('Measured size')}</h2>
       <div className="mt-3 flex items-baseline gap-3">
         {axes.map(([axis, mm]) => (
           <div key={axis}>
             <span className="text-[10px] uppercase tracking-wide text-mist-500">{axis}</span>
-            <p className="text-[15px] tabular-nums text-mist-100">{mm.toFixed(1)}</p>
+            <p className="text-[15px] tabular-nums text-mist-100">{decimal(mm.toFixed(1))}</p>
           </div>
         ))}
-        <span className="text-[12px] text-mist-500">mm</span>
+        <span className="text-[12px] text-mist-500">{unitLabel('mm')}</span>
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-mist-500">
-        Extent of the {measured.vertices} vertices read from the solid inside this file. Curved faces can
-        reach past their corners, so treat this as the vertex extent rather than a certified bounding box.
+        {t(
+          'Extent of the {count} vertices read from the solid inside this file. Curved faces can reach past their corners, so treat this as the vertex extent rather than a certified bounding box.',
+          { count: formatCount(measured.vertices) },
+        )}
       </p>
     </section>
   );
 }
 
-/** Puts text on the clipboard, with the old route for browsers that refuse the new one. */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    const area = window.document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    window.document.body.appendChild(area);
-    area.select();
-    const done = window.document.execCommand('copy');
-    area.remove();
-    return done;
-  }
-}
-
-const SEARCH_ROOT_KEY = 'docuview.searchRoot';
-
-function readSearchRoot(): string {
-  try {
-    return window.localStorage.getItem(SEARCH_ROOT_KEY) || 'C:\\';
-  } catch {
-    return 'C:\\';
-  }
-}
-
-/**
- * Windows Explorer's own search, opened on a file name. The browser asks
- * before handing the link to Windows; Explorer then shows every file of that
- * name under the folder, ready to be dragged back onto this page.
- */
-function explorerSearch(name: string, root: string): string {
-  return `search-ms:query=${encodeURIComponent(name)}&crumb=location:${encodeURIComponent(root)}&displayname=${encodeURIComponent(`DocuView: ${name}`)}`;
-}
-
-function ComponentsPanel({
-  components,
-  counts,
-  occurrences,
-  placed,
-  placementsTotal,
-  onAdd,
-  rejected,
-  onDismissRejected,
-  disabled,
-  storage,
-}: {
-  components: ComponentView[];
-  counts: { missing: number; pending: number; ready: number; failed: number };
-  /** How many times the assembly places each part, by lower-case file name. */
-  occurrences: Map<string, number>;
-  /** Occurrences of parts in their own files now standing in the scene. */
-  placed: number;
-  placementsTotal: number;
-  onAdd(files: File[]): void;
-  rejected: { name: string; message: string } | null;
-  onDismissRejected(): void;
-  disabled: boolean;
-  storage: Storage | null;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const folderRef = useRef<HTMLInputElement>(null);
-  const locateRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-  /** The component a "Locate…" dialog is open for. */
-  const [locating, setLocating] = useState<string | null>(null);
-  /** Parts shown from a file of another name, which the user chose on purpose. */
-  const [substitutes, setSubstitutes] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState<string | null>(null);
-  const [searchRoot, setSearchRoot] = useState('C:\\');
-  const [editingRoot, setEditingRoot] = useState(false);
-
-  useEffect(() => setSearchRoot(readSearchRoot()), []);
-
-  const say = useCallback((text: string) => {
-    setNotice(text);
-    window.setTimeout(() => setNotice((current) => (current === text ? null : current)), 6000);
-  }, []);
-
-  const accept = useCallback(
-    (list: FileList | null) => {
-      if (!list || list.length === 0) return;
-      onAdd(Array.from(list));
-    },
-    [onAdd],
-  );
-
-  /** Copy the name, then open the file dialog: paste it into the dialog's search box. */
-  const locate = useCallback(
-    async (name: string) => {
-      const copied = await copyText(name);
-      setLocating(name);
-      say(
-        copied
-          ? `“${name}” is copied. In the window that opens, paste it (Ctrl+V) into the search box at the top right, or into “File name”.`
-          : `Look for “${name}” in the window that opens.`,
-      );
-      const input = locateRef.current;
-      if (input) {
-        const extension = /\.[^.]+$/.exec(name)?.[0];
-        input.accept = extension ?? '';
-        input.click();
-      }
-    },
-    [say],
-  );
-
-  const copyName = useCallback(
-    async (name: string) => {
-      if (await copyText(name)) say(`Copied “${name}”.`);
-    },
-    [say],
-  );
-
-  const missingNames = components.filter((c) => c.status === 'missing' || c.status === 'failed').map((c) => c.name);
-  const total = components.length;
-  const resolved = counts.ready;
-
-  return (
-    <section className="border-b border-line p-4">
-      <div className="flex items-baseline justify-between">
-        <h2 className="field-label">Components</h2>
-        <span className="font-mono text-[11px] text-mist-500" data-testid="component-count">
-          {resolved}/{total}
-        </span>
-      </div>
-      {placementsTotal > 0 && (
-        <p className="mt-1 text-[11px] text-mist-500" data-testid="placed-count">
-          {placed === placementsTotal
-            ? `All ${placementsTotal} occurrences stand where the assembly puts them.`
-            : `${placed} of ${placementsTotal} occurrences placed.`}
-        </p>
-      )}
-
-      <div
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        aria-label="Add assembly components"
-        aria-disabled={disabled}
-        data-testid="component-dropzone"
-        onClick={() => !disabled && inputRef.current?.click()}
-        onKeyDown={(event) => {
-          if (disabled) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            inputRef.current?.click();
-          }
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          if (!disabled) setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          if (disabled) return;
-          const items = Array.from(event.dataTransfer?.items ?? []);
-          const entries = items.map((item) => item.webkitGetAsEntry?.()).filter((entry): entry is FileSystemEntry => Boolean(entry));
-          if (entries.some((entry) => entry.isDirectory)) {
-            void filesIn(entries).then((files) => files.length > 0 && onAdd(files));
-          } else {
-            accept(event.dataTransfer?.files ?? null);
-          }
-        }}
-        className={`mt-3 rounded-xl border-2 border-dashed px-3 py-4 text-center text-[12px] transition-colors ${
-          disabled
-            ? 'cursor-not-allowed border-line bg-ink-900/50 text-mist-600'
-            : dragging
-              ? 'cursor-pointer border-accent bg-accent/10 text-accent-bright'
-              : 'cursor-pointer border-line-strong bg-ink-900/60 text-mist-400 hover:border-accent/60'
-        }`}
-      >
-        {disabled
-          ? 'This session has expired, so components can no longer be added.'
-          : 'Drop the component files — or the whole folder — here. Each part appears in place as soon as it is ready.'}
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          className="sr-only"
-          data-testid="component-input"
-          onChange={(event) => {
-            accept(event.target.files);
-            event.target.value = '';
-          }}
-        />
-      </div>
-      {!disabled && (
-        <button
-          type="button"
-          className="mt-2 w-full rounded-lg border border-line px-3 py-1.5 text-[12px] text-mist-300 hover:border-accent/60"
-          onClick={() => folderRef.current?.click()}
-        >
-          Choose the folder with the parts…
-        </button>
-      )}
-      <input
-        ref={folderRef}
-        type="file"
-        multiple
-        className="sr-only"
-        data-testid="component-folder-input"
-        {...{ webkitdirectory: '', directory: '' }}
-        onChange={(event) => {
-          accept(event.target.files);
-          event.target.value = '';
-        }}
-      />
-      {/* One file, for the row whose "Locate…" was pressed. Whatever it is
-          called on disk, it is sent under the name the assembly asked for. */}
-      <input
-        ref={locateRef}
-        type="file"
-        className="sr-only"
-        data-testid="component-locate-input"
-        onChange={(event) => {
-          const file = event.target.files?.[0];
-          event.target.value = '';
-          const target = locating;
-          setLocating(null);
-          if (!file || !target) return;
-          // Another name is allowed — files get renamed — but never taken
-          // silently: a wrong part would stand in the right one's place.
-          if (
-            file.name.toLowerCase() !== target.toLowerCase() &&
-            !window.confirm(`The assembly asks for “${target}”.\nThe chosen file is “${file.name}”.\n\nPut it in that part's place anyway?`)
-          ) {
-            return;
-          }
-          const sameType = /\.[^.]+$/.exec(file.name)?.[0].toLowerCase() === /\.[^.]+$/.exec(target)?.[0].toLowerCase();
-          const renamed = sameType && file.name.toLowerCase() !== target.toLowerCase();
-          setSubstitutes((current) => {
-            const next = { ...current };
-            if (renamed) next[target] = file.name;
-            else delete next[target];
-            return next;
-          });
-          onAdd([renamed ? new File([file], target, { type: file.type }) : file]);
-        }}
-      />
-
-      {rejected && (
-        <div role="alert" className="mt-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2">
-          <p className="text-[12px] text-mist-100">
-            {rejected.name}: {rejected.message}
-          </p>
-          <button type="button" onClick={onDismissRejected} className="mt-1 text-[11px] text-mist-400 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {missingNames.length > 0 && !disabled && (
-        <div className="mt-3 rounded-lg border border-warn/30 bg-warn/5 px-3 py-2" data-testid="component-missing">
-          <p className="text-[12px] text-mist-200">
-            {missingNames.length} file{missingNames.length === 1 ? '' : 's'} still missing.
-          </p>
-          {storage && (
-            <p className="mt-1 text-[11px] leading-relaxed text-mist-400" data-testid="component-storage">
-              {storage.levelsUp <= 0 ? (
-                <>
-                  They were kept beside the assembly, in <span className="text-mist-200">“{storage.name}”</span>.
-                </>
-              ) : (
-                <>
-                  They were kept under <span className="text-mist-200">“{storage.name}”</span>, {storage.levelsUp} folder
-                  {storage.levelsUp === 1 ? '' : 's'} above the assembly’s own. Choose that folder with “Choose the folder
-                  with the parts…”: each part is found by name, and the right copy by its place.
-                </>
-              )}
-            </p>
-          )}
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-            <button
-              type="button"
-              className="text-accent underline underline-offset-2"
-              onClick={() =>
-                void copyText(missingNames.join('\n')).then((ok) => ok && say('The list of missing files is copied.'))
-              }
-            >
-              Copy the list
-            </button>
-            <span className="text-mist-500">
-              Explorer searches in{' '}
-              {editingRoot ? (
-                <input
-                  autoFocus
-                  defaultValue={searchRoot}
-                  aria-label="Folder Explorer searches in"
-                  className="w-28 rounded border border-line bg-ink-900 px-1 font-mono text-[11px] text-mist-100"
-                  onBlur={(event) => {
-                    const value = event.target.value.trim() || 'C:\\';
-                    setSearchRoot(value);
-                    setEditingRoot(false);
-                    try {
-                      window.localStorage.setItem(SEARCH_ROOT_KEY, value);
-                    } catch {
-                      /* private window: kept for this page only */
-                    }
-                  }}
-                  onKeyDown={(event) => event.key === 'Enter' && (event.target as HTMLInputElement).blur()}
-                />
-              ) : (
-                <button
-                  type="button"
-                  className="font-mono text-mist-300 underline decoration-dotted underline-offset-2"
-                  title="Change the folder Explorer searches in"
-                  onClick={() => setEditingRoot(true)}
-                >
-                  {searchRoot}
-                </button>
-              )}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {notice && (
-        <p role="status" className="mt-2 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[11px] leading-relaxed text-mist-200">
-          {notice}
-        </p>
-      )}
-
-      <ul className="mt-3 space-y-1" data-testid="component-list">
-        {components.map((component) => {
-          const count = occurrences.get(component.name.toLowerCase()) ?? 0;
-          const needed = component.status === 'missing' || component.status === 'failed';
-          const unavailable = component.result?.meta.unavailableConfigurations;
-          const notKept = Array.isArray(unavailable) ? unavailable.filter((v): v is string => typeof v === 'string') : [];
-          return (
-            <li
-              key={component.name}
-              className="rounded-lg border border-line bg-ink-900/50 px-2.5 py-1.5"
-              data-testid="component-row"
-            >
-              <div className="flex items-center gap-2">
-                <StatusDot status={component.status} />
-                <span className="min-w-0 flex-1 truncate text-[12px] text-mist-200" title={component.name}>
-                  {component.name}
-                </span>
-                {count > 1 && (
-                  <span className="shrink-0 font-mono text-[11px] text-mist-500" title={`Placed ${count} times`}>
-                    ×{count}
-                  </span>
-                )}
-                <span className="shrink-0 text-[11px] text-mist-500">
-                  {component.status === 'pending' && component.uploaded < 100
-                    ? `${component.uploaded}%`
-                    : STATUS_LABEL[component.status]}
-                </span>
-              </div>
-              {needed && !disabled && (
-                <div className="mt-1 flex items-center gap-1 pl-3.5">
-                  <RowAction
-                    label="Locate…"
-                    title="Copy the name and choose the file on disk — paste the name into the dialog's search box"
-                    onClick={() => void locate(component.name)}
-                    testId="component-locate"
-                  >
-                    <path d="M2.5 5.5v6A1.5 1.5 0 0 0 4 13h8a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 12 5H8L6.5 3.5H4A1.5 1.5 0 0 0 2.5 5v.5" strokeLinejoin="round" />
-                  </RowAction>
-                  <RowAction
-                    label="Search"
-                    title={`Search for it with Windows Explorer, in ${searchRoot}`}
-                    href={explorerSearch(component.name, searchRoot)}
-                    onClick={() => void copyText(component.name)}
-                    testId="component-explorer"
-                  >
-                    <circle cx="7" cy="7" r="3.8" />
-                    <path d="m10 10 3.2 3.2" strokeLinecap="round" />
-                  </RowAction>
-                  <RowAction
-                    label="Copy name"
-                    title="Copy the file name"
-                    onClick={() => void copyName(component.name)}
-                    testId="component-copy"
-                  >
-                    <rect x="5.5" y="5.5" width="7.5" height="7.5" rx="1.3" />
-                    <path d="M3 10.5V4a1 1 0 0 1 1-1h6.5" strokeLinecap="round" />
-                  </RowAction>
-                </div>
-              )}
-              {needed && storage && component.originalPath && (
-                <p
-                  className="mt-1 truncate pl-3.5 font-mono text-[10px] text-mist-500"
-                  title={component.originalPath}
-                  data-testid="component-where"
-                >
-                  in {keptIn(component.originalPath, storage)}
-                </p>
-              )}
-              {component.status === 'failed' && component.error && (
-                <p className="mt-1 pl-3.5 text-[11px] leading-snug text-danger">{component.error.message}</p>
-              )}
-              {substitutes[component.name] && (
-                <p className="mt-1 pl-3.5 text-[11px] leading-snug text-warn" data-testid="component-substitute">
-                  Shown from “{substitutes[component.name]}”, chosen in its place.
-                </p>
-              )}
-              {notKept.length > 0 && (
-                <p className="mt-1 pl-3.5 text-[11px] leading-snug text-warn">
-                  Configuration {notKept.join(', ')} is not saved in this file; shown as saved.
-                </p>
-              )}
-            </li>
-          );
-        })}
-        {components.length === 0 && (
-          <li className="px-1 py-2 text-[12px] text-mist-500">
-            No component names could be read from this assembly. Drop the parts above and they will be added anyway.
-          </li>
-        )}
-      </ul>
-    </section>
-  );
-}
-
-function RowAction({
-  label,
-  title,
-  onClick,
-  href,
-  testId,
-  children,
-}: {
-  label: string;
-  title: string;
-  onClick(): void;
-  href?: string;
-  testId: string;
-  children: React.ReactNode;
-}) {
-  const className =
-    'inline-flex items-center gap-1 rounded-md border border-line px-1.5 py-0.5 text-[11px] text-mist-300 transition-colors hover:border-accent/60 hover:text-mist-100';
-  const icon = (
-    <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
-      {children}
-    </svg>
-  );
-  return href ? (
-    <a href={href} title={title} onClick={onClick} className={className} data-testid={testId}>
-      {icon}
-      {label}
-    </a>
-  ) : (
-    <button type="button" title={title} onClick={onClick} className={className} data-testid={testId}>
-      {icon}
-      {label}
-    </button>
-  );
-}
-
-const STATUS_LABEL: Record<ComponentView['status'], string> = {
-  missing: 'Missing',
-  pending: 'Opening',
-  ready: 'Ready',
-  failed: 'Failed',
-};
-
-function StatusDot({ status }: { status: ComponentView['status'] }) {
-  const className =
-    status === 'ready'
-      ? 'bg-ok'
-      : status === 'failed'
-        ? 'bg-danger'
-        : status === 'pending'
-          ? 'bg-accent animate-pulse'
-          : 'bg-ink-600';
-  return <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${className}`} />;
-}
-
 function PropertiesList({ document }: { document: NativeCadDocument }) {
+  const { t } = useT();
   return (
     <section className="p-4">
-      <h2 className="field-label">Document properties</h2>
+      <h2 className="field-label">{t('Document properties')}</h2>
       <dl className="mt-3 space-y-2" data-testid="native-properties">
         {document.properties.map((property) => (
           <div key={property.name} className="grid grid-cols-[7.5rem_1fr] gap-2">
             <dt className="truncate text-[12px] text-mist-500" title={property.name}>
-              {property.name}
+              {t(property.name)}
             </dt>
             <dd className="break-words text-[12px] text-mist-200">{property.value}</dd>
           </div>

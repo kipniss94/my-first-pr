@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { dismissOpenReport, droppedFiles, openFiles, useOpenReport } from '@/lib/open';
+import { useT } from '@/lib/prefs';
 import { cancelSession, forgetSession, useSessions, type Session } from '@/lib/session';
 
 /**
@@ -12,6 +13,7 @@ import { cancelSession, forgetSession, useSessions, type Session } from '@/lib/s
 export function ViewerTabs({ currentId }: { currentId: string }) {
   const router = useRouter();
   const sessions = useSessions();
+  const { t } = useT();
 
   const close = useCallback(
     (session: Session) => {
@@ -31,7 +33,7 @@ export function ViewerTabs({ currentId }: { currentId: string }) {
 
   return (
     <nav
-      aria-label="Open documents"
+      aria-label={t('Open documents')}
       data-testid="viewer-tabs"
       className="flex h-9 shrink-0 items-stretch gap-px overflow-x-auto border-b border-line bg-ink-900"
     >
@@ -58,8 +60,8 @@ export function ViewerTabs({ currentId }: { currentId: string }) {
             <button
               type="button"
               onClick={() => close(session)}
-              aria-label={`Close ${session.fileName}`}
-              title="Close"
+              aria-label={t('Close {name}', { name: session.fileName })}
+              title={t('Close')}
               className="mr-1.5 grid h-5 w-5 shrink-0 place-items-center rounded text-mist-500 opacity-60 hover:bg-ink-700 hover:text-mist-100 group-hover:opacity-100"
             >
               <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -140,6 +142,7 @@ export function useViewerDrop(): boolean {
 
 /** A hint while files are dragged over the viewer. It never takes the drop. */
 export function ViewerDropHint() {
+  const { t } = useT();
   return (
     <div
       aria-hidden="true"
@@ -147,9 +150,9 @@ export function ViewerDropHint() {
       className="pointer-events-none fixed inset-0 z-50 border-2 border-dashed border-accent/70 bg-accent/5"
     >
       <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-xl border border-accent/50 bg-ink-900/95 px-5 py-3 text-center shadow-lg">
-        <p className="text-[14px] font-medium text-mist-100">Drop to open in new tabs</p>
+        <p className="text-[14px] font-medium text-mist-100">{t('Drop to open in new tabs')}</p>
         <p className="mt-0.5 text-[12px] text-mist-400">
-          Parts an open assembly is missing go into it; the rest open beside it.
+          {t('Parts an open assembly is missing go into it; the rest open beside it.')}
         </p>
       </div>
     </div>
@@ -160,6 +163,7 @@ export function ViewerDropHint() {
 export function OpenReportBanner() {
   const report = useOpenReport();
   const [copied, setCopied] = useState<string | null>(null);
+  const { t, tp, tx } = useT();
   if (!report) return null;
 
   const copy = (key: string, text: string) => {
@@ -177,15 +181,32 @@ export function OpenReportBanner() {
             <li key={assembly.sessionId}>
               <span className="font-medium text-mist-100">{assembly.name}</span>
               {assembly.total === 0 ? (
-                <span className="text-mist-400"> — every part is saved inside the assembly.</span>
+                <span className="text-mist-400"> — {t('every part is saved inside the assembly.')}</span>
               ) : assembly.missing.length === 0 ? (
-                <span className="text-ok"> — all {assembly.total} part files are here.</span>
+                <span className="text-ok">
+                  {' '}
+                  —{' '}
+                  {tp(
+                    assembly.total,
+                    ['the {n} part file is here.', 'all {n} part files are here.'],
+                    ['{n} файл детали на месте.', 'все {n} файла деталей на месте.', 'все {n} файлов деталей на месте.'],
+                  )}
+                </span>
               ) : (
                 <>
                   <span className="text-warn">
                     {' '}
-                    — {assembly.total - assembly.missing.length} of {assembly.total} part files are here; missing{' '}
-                    {assembly.missing.length}:
+                    —{' '}
+                    {tp(
+                      assembly.total,
+                      ['{have} of {n} part file is here; missing {missing}:', '{have} of {n} part files are here; missing {missing}:'],
+                      [
+                        'есть {have} из {n} файла деталей; не хватает {missing}:',
+                        'есть {have} из {n} файлов деталей; не хватает {missing}:',
+                        'есть {have} из {n} файлов деталей; не хватает {missing}:',
+                      ],
+                      { have: assembly.total - assembly.missing.length, missing: assembly.missing.length },
+                    )}
                   </span>{' '}
                   <span className="break-words text-mist-300" data-testid="open-report-missing">
                     {assembly.missing.join(', ')}
@@ -195,7 +216,7 @@ export function OpenReportBanner() {
                     onClick={() => copy(assembly.sessionId, assembly.missing.join('\n'))}
                     className="text-accent underline underline-offset-2"
                   >
-                    {copied === assembly.sessionId ? 'Copied' : 'Copy the list'}
+                    {copied === assembly.sessionId ? t('Copied') : t('Copy the list')}
                   </button>
                 </>
               )}
@@ -203,16 +224,20 @@ export function OpenReportBanner() {
           ))}
           {report.folded.map((entry) => (
             <li key={entry.name} className="text-mist-400">
-              <span className="text-mist-200">{entry.name}</span> is a sub-assembly of{' '}
-              <span className="text-mist-200">{entry.into}</span>; its parts are shown there, in place.
+              {tx('{name} is a sub-assembly of {into}; its parts are shown there, in place.', {
+                name: <span className="text-mist-200">{entry.name}</span>,
+                into: <span className="text-mist-200">{entry.into}</span>,
+              })}
             </li>
           ))}
-          {report.refused.length > 0 && <li className="text-mist-400">Not opened: {report.refused.join(' ')}</li>}
+          {report.refused.length > 0 && (
+            <li className="text-mist-400">{t('Not opened: {list}', { list: report.refused.map((r) => t(r)).join(' ') })}</li>
+          )}
         </ul>
         <button
           type="button"
           onClick={dismissOpenReport}
-          aria-label="Dismiss"
+          aria-label={t('Dismiss')}
           className="grid h-6 w-6 shrink-0 place-items-center rounded text-mist-500 hover:bg-ink-700 hover:text-mist-100"
         >
           <svg viewBox="0 0 12 12" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">

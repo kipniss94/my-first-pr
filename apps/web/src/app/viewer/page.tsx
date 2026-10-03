@@ -8,6 +8,8 @@ import { ViewerShell } from '@/components/viewer/ViewerShell';
 import { useViewerDrop, ViewerDropHint } from '@/components/viewer/ViewerTabs';
 import { Dropzone } from '@/components/upload/Dropzone';
 import { Logo } from '@/components/site/SiteChrome';
+import { HeaderControls } from '@/components/site/HeaderControls';
+import { useT } from '@/lib/prefs';
 
 export default function ViewerPage() {
   return (
@@ -87,11 +89,12 @@ function ViewerRoute() {
 }
 
 function Booting() {
+  const { t } = useT();
   return (
     <div className="grid h-dvh place-items-center bg-ink-900">
       <div className="flex items-center gap-3 text-sm text-mist-400">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
-        Opening…
+        {t('Opening…')}
       </div>
     </div>
   );
@@ -102,25 +105,27 @@ function Booting() {
  * than bouncing the visitor to the home page, offer the upload box right here.
  */
 function EmptyState() {
+  const { t } = useT();
   return (
     <div className="flex min-h-dvh flex-col bg-ink-900">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-ink-850 px-4">
         <Logo />
+        <HeaderControls className="ml-auto" />
       </header>
       <main className="flex flex-1 items-center justify-center px-4 py-12">
         <div className="w-full max-w-xl">
           <h1 className="text-center text-2xl font-semibold tracking-tight text-mist-100">
-            No document open
+            {t('No document open')}
           </h1>
           <p className="mx-auto mt-2 max-w-md text-center text-sm leading-relaxed text-mist-400">
-            Documents live for the length of a session. Drop a file here, or pick one from the workspace.
+            {t('Documents live for the length of a session. Drop a file here, or pick one from the workspace.')}
           </p>
           <div className="mt-8">
             <Dropzone compact />
           </div>
           <p className="mt-6 text-center text-sm">
             <Link href="/" className="link-quiet underline underline-offset-4">
-              Back to the workspace
+              {t('Back to the workspace')}
             </Link>
           </p>
         </div>

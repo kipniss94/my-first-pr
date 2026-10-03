@@ -74,6 +74,11 @@ export function pathOf(file: File): string {
   return located.get(file) || file.webkitRelativePath || file.name;
 }
 
+/** Record where a file was found, for files that do not carry their own path. */
+export function rememberPath(file: File, path: string): void {
+  located.set(file, path);
+}
+
 /** Every file under dropped folders, however deep. */
 export async function filesIn(entries: FileSystemEntry[]): Promise<File[]> {
   const files: File[] = [];

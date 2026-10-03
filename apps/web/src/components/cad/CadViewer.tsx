@@ -8,6 +8,8 @@ import { loadMeshFile, loadNmg, mergeModels, placeModels, type MergeSource } fro
 import { CadScene, disposeObject, type SelectionInfo } from '@/lib/cad/scene';
 import type { RenderableComponent } from '@/lib/assembly';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
+import { formatLength } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import type {
   CadModel,
   DisplayMode,
@@ -76,6 +78,7 @@ export function CadViewer({
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CadScene | null>(null);
+  const { t } = useT();
 
   const [model, setModel] = useState<CadModel | null>(null);
   const [loadError, setLoadError] = useState<{ message: string; hint?: string } | null>(null);
@@ -490,7 +493,7 @@ export function CadViewer({
                 </div>
                 {layoutNote && (
                   <p className="shrink-0 border-t border-line px-3 py-2.5 text-[11px] leading-relaxed text-mist-500">
-                    {layoutNote}
+                    {t(layoutNote)}
                   </p>
                 )}
               </div>
@@ -499,7 +502,7 @@ export function CadViewer({
           </aside>
 
           {/* Centre: the 3D view */}
-          <div className="relative min-w-0 flex-1 bg-[#0e131b]">
+          <div className="relative min-w-0 flex-1 bg-[var(--viewport-bg)]">
             <div ref={containerRef} className="absolute inset-0" data-testid="cad-canvas" />
             {!model && !loadError && <LoadingOverlay percent={percent} />}
             {model && tool !== 'select' && (
@@ -511,7 +514,10 @@ export function CadViewer({
             )}
             {model && section.enabled && (
               <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-line bg-ink-900/90 px-2.5 py-1.5 font-mono text-[11px] text-mist-300 backdrop-blur">
-                Section {section.axis.toUpperCase()} @ {sectionCoordinate.toFixed(2)} {model.units}
+                {t('Section {axis} @ {position}', {
+                  axis: section.axis.toUpperCase(),
+                  position: formatLength(sectionCoordinate, model.units),
+                })}
               </div>
             )}
           </div>
@@ -526,10 +532,10 @@ export function CadViewer({
               <>
                 <div className="flex shrink-0 border-b border-line">
                   <TabButton active={rightTab === 'properties'} onClick={() => setRightTab('properties')}>
-                    Properties
+                    {t('Properties')}
                   </TabButton>
                   <TabButton active={rightTab === 'analysis'} onClick={() => setRightTab('analysis')}>
-                    Analysis
+                    {t('Analysis')}
                   </TabButton>
                 </div>
                 {rightTab === 'properties' ? (
@@ -599,10 +605,11 @@ export function CadViewer({
 }
 
 function LoadingOverlay({ percent }: { percent: number }) {
+  const { t } = useT();
   return (
     <div className="absolute inset-0 grid place-items-center bg-ink-900/70 backdrop-blur-sm">
       <div className="w-56 text-center">
-        <p className="text-[13px] text-mist-300">Loading geometry</p>
+        <p className="text-[13px] text-mist-300">{t('Loading geometry')}</p>
         <div className="mt-3 h-1 overflow-hidden rounded-full bg-ink-700">
           <div
             className="h-full rounded-full bg-accent transition-[width] duration-200"
@@ -631,11 +638,12 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick(): 
 
 /** The little tab that collapses a side panel. */
 function PanelHandle({ side, open, onClick }: { side: 'left' | 'right'; open: boolean; onClick(): void }) {
+  const { t } = useT();
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`${open ? 'Collapse' : 'Expand'} ${side} panel`}
+      aria-label={t(`${open ? 'Collapse' : 'Expand'} the ${side} panel`)}
       className={`absolute top-1/2 z-10 grid h-12 w-4 -translate-y-1/2 place-items-center rounded-md border border-line bg-ink-800 text-mist-400 transition-colors hover:bg-ink-700 hover:text-mist-100 ${
         side === 'left' ? '-right-2' : '-left-2'
       }`}

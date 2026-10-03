@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchWithProgress } from '@/lib/api';
-import { formatCount, formatLength } from '@/lib/format';
+import { decimal, formatCount, formatLength, unitLabel } from '@/lib/format';
+import { useT, useTheme } from '@/lib/prefs';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 
@@ -46,8 +47,24 @@ const UNIT_NAMES: Record<number, string> = {
 
 const LAYER_FALLBACK = '#93a3bb';
 
+/**
+ * A drawing is authored for one background. On the light one, the default
+ * ink and anything near white (colour 7, drawn white on black in AutoCAD)
+ * are drawn dark instead, as AutoCAD itself does.
+ */
+function inkFor(color: string, light: boolean): string {
+  if (!light) return color;
+  if (color === LAYER_FALLBACK) return '#3d4a5e';
+  const value = Number.parseInt(color.slice(1), 16);
+  const luminance = (0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255)) / 255;
+  return luminance > 0.8 ? '#1d2533' : color;
+}
+
 export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [theme] = useTheme();
+  const { t } = useT();
+  const light = theme === 'light';
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [drawing, setDrawing] = useState<Drawing | null>(null);
@@ -163,14 +180,15 @@ export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
 
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, width, height);
-    context.fillStyle = '#0e131b';
+    context.fillStyle = light ? '#ffffff' : '#0e131b';
     context.fillRect(0, 0, width, height);
 
     const { scale, offsetX, offsetY } = viewRef.current;
     // DXF Y grows upwards, canvas Y grows downwards.
     const toScreen = (point: Point): Point => ({ x: point.x * scale + offsetX, y: -point.y * scale + offsetY });
 
-    const colorFor = (layer: string) => drawing.layers.find((entry) => entry.name === layer)?.color ?? LAYER_FALLBACK;
+    const colorFor = (layer: string) =>
+      inkFor(drawing.layers.find((entry) => entry.name === layer)?.color ?? LAYER_FALLBACK, light);
     context.lineWidth = 1;
     context.lineJoin = 'round';
     context.lineCap = 'round';
@@ -348,7 +366,7 @@ export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
             onWheel={onWheel}
           />
           {!drawing && (
-            <div className="absolute inset-0 grid place-items-center text-sm text-mist-400">Loading drawing…</div>
+            <div className="absolute inset-0 grid place-items-center text-sm text-mist-400">{t('Loading drawing…')}</div>
           )}
         </div>
 
@@ -363,27 +381,27 @@ export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
             className={`btn ${measuring ? 'btn-primary' : 'btn-ghost'}`}
             data-testid="dxf-measure"
           >
-            Measure
+            {t('Measure')}
           </button>
           {measurement && drawing && (
             <span className="whitespace-nowrap font-mono text-[12px] text-measure">
               {formatLength(measurement.distance, drawing.units)}
               <span className="ml-2 text-mist-500">
-                ΔX {measurement.dx.toFixed(2)} · ΔY {measurement.dy.toFixed(2)}
+                ΔX {decimal(measurement.dx.toFixed(2))} · ΔY {decimal(measurement.dy.toFixed(2))}
               </span>
             </span>
           )}
           <div className="ml-auto flex shrink-0 items-center gap-2">
             {drawing && (
               <span className="hidden font-mono text-[11px] text-mist-500 sm:inline">
-                {formatCount(drawing.shapes.length)} entities · {drawing.units}
+                {t('{count} entities', { count: formatCount(drawing.shapes.length) })} · {unitLabel(drawing.units)}
               </span>
             )}
             <button type="button" onClick={fit} className="btn btn-subtle" data-testid="dxf-fit">
-              Fit
+              {t('Fit')}
             </button>
             <button type="button" onClick={() => setPanelOpen((open) => !open)} className="btn btn-ghost">
-              Layers
+              {t('Layers')}
             </button>
           </div>
         </div>
@@ -391,7 +409,7 @@ export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
 
       {panelOpen && drawing && (
         <aside className="flex w-60 shrink-0 flex-col border-l border-line bg-ink-850">
-          <h2 className="border-b border-line px-3 py-2.5 field-label">Layers</h2>
+          <h2 className="border-b border-line px-3 py-2.5 field-label">{t('Layers')}</h2>
           <ul className="min-h-0 flex-1 overflow-auto py-1">
             {drawing.layers.map((layer) => {
               const hidden = hiddenLayers.has(layer.name);
@@ -426,7 +444,7 @@ export function DxfViewer({ source, onProgress, onReady }: DxfViewerProps) {
           </ul>
           {Object.keys(drawing.skipped).length > 0 && (
             <div className="border-t border-line px-3 py-2.5">
-              <p className="field-label">Not drawn</p>
+              <p className="field-label">{t('Not drawn')}</p>
               <ul className="mt-1.5 space-y-0.5">
                 {Object.entries(drawing.skipped).map(([type, count]) => (
                   <li key={type} className="flex justify-between font-mono text-[11px] text-mist-500">

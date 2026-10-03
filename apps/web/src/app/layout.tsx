@@ -1,4 +1,7 @@
 import type { Metadata, Viewport } from 'next';
+import { cookies, headers } from 'next/headers';
+import { PrefsProvider } from '@/lib/prefs';
+import { LANG_COOKIE, THEME_COOKIE, type Lang, type Theme } from '@/lib/prefs-keys';
 import './globals.css';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
@@ -49,10 +52,23 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The visitor's choices, so the first paint is already in their language
+  // and theme. Nothing chosen yet: dark, and English unless the browser asks
+  // for Russian (the toggle then remembers whatever is picked).
+  const store = await cookies();
+  const langCookie = store.get(LANG_COOKIE)?.value;
+  const asked = (await headers()).get('accept-language') ?? '';
+  const lang: Lang = langCookie === 'ru' || langCookie === 'en' ? langCookie : /^ru/i.test(asked) ? 'ru' : 'en';
+  const theme: Theme = store.get(THEME_COOKIE)?.value === 'light' ? 'light' : 'dark';
+
   return (
-    <html lang="en">
-      <body className="min-h-full antialiased">{children}</body>
+    <html lang={lang} data-theme={theme} style={{ colorScheme: theme }}>
+      <body className="min-h-full antialiased">
+        <PrefsProvider lang={lang} theme={theme}>
+          {children}
+        </PrefsProvider>
+      </body>
     </html>
   );
 }

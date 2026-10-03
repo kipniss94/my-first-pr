@@ -55,6 +55,49 @@
   color-scheme: dark;
   --header-h: 56px;
   --toolbar-h: 52px;
+  /* Behind 3D models and around drawing sheets. */
+  --viewport-bg: #0e131b;
+  --sheet-surround: #3a4150;
+  --label-bg: rgb(11 14 20 / 0.88);
+  --shimmer: rgb(255 255 255 / 0.05);
+}
+
+/*
+ * The light theme swaps the chrome palette in place: `ink` stays "surfaces"
+ * (900 the page, 850 the panels) and `mist` stays "text" (100 the strongest),
+ * only now light surfaces and dark text. `paper` is light in both.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-ink-950: #e3e8ef;
+  --color-ink-900: #eff2f6;
+  --color-ink-850: #ffffff;
+  --color-ink-800: #f2f4f8;
+  --color-ink-700: #e5e9f0;
+  --color-ink-600: #d2d9e3;
+
+  --color-line: #dce2ea;
+  --color-line-strong: #c5cedb;
+
+  --color-mist-100: #0f1620;
+  --color-mist-200: #232d3b;
+  --color-mist-300: #3a4557;
+  --color-mist-400: #556074;
+  --color-mist-500: #768196;
+
+  --color-accent-soft: #dbe7ff;
+  --color-accent-bright: #2560d4;
+  --color-cyan: #0e9ba3;
+  --color-measure: #b86e00;
+  --color-select: #d9621a;
+  --color-danger: #d23b33;
+  --color-warn: #a86c12;
+  --color-ok: #16945f;
+
+  --viewport-bg: #e6eaf0;
+  --sheet-surround: #cfd5de;
+  --label-bg: rgb(255 255 255 / 0.94);
+  --shimmer: rgb(15 22 32 / 0.05);
 }
 
 * {
@@ -335,7 +378,7 @@ body {
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.05), transparent);
+  background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
   animation: shimmer 1.6s infinite;
 }
 
@@ -358,7 +401,7 @@ body {
   padding: 2px 7px;
   border-radius: 6px;
   border: 1px solid color-mix(in srgb, var(--color-measure) 45%, transparent);
-  background: rgb(11 14 20 / 0.88);
+  background: var(--label-bg);
   color: var(--color-measure);
   font-family: var(--font-mono);
   font-size: 11px;

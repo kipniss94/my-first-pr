@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { CachedDocument } from '@/lib/cache';
 import { formatBytes } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 
 /**
  * One document on the desktop.
@@ -31,6 +32,7 @@ const FAMILY_TINT: Record<string, string> = {
 
 export function DocumentCard({ document, onOpen, onRemove, busy = false }: DocumentCardProps) {
   const thumbnail = useObjectUrl(document.thumbnail);
+  const { t } = useT();
   const label = document.formatLabel ?? document.extension.toUpperCase() ?? 'FILE';
 
   return (
@@ -69,7 +71,7 @@ export function DocumentCard({ document, onOpen, onRemove, busy = false }: Docum
           <span className="block truncate text-[13px] font-medium text-mist-100">{document.name}</span>
           <span className="mt-0.5 block truncate text-[11px] text-mist-500">
             {label} · {formatBytes(document.size)}
-            {!document.hasBlob && ' · not cached'}
+            {!document.hasBlob && ` · ${t('not cached')}`}
           </span>
         </span>
       </button>
@@ -80,7 +82,7 @@ export function DocumentCard({ document, onOpen, onRemove, busy = false }: Docum
           event.stopPropagation();
           onRemove(document);
         }}
-        aria-label={`Remove ${document.name} from the workspace`}
+        aria-label={t('Remove {name} from the workspace', { name: document.name })}
         className="absolute right-3 top-3 grid h-6 w-6 place-items-center rounded-md border border-line bg-ink-900/85 text-mist-400 opacity-0 backdrop-blur transition hover:border-danger/50 hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
       >
         <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">

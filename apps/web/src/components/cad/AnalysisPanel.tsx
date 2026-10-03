@@ -1,6 +1,7 @@
 'use client';
 
 import { formatAngle, formatLength } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import type { CadModel, MeasurementRecord, SectionState, ToolMode } from '@/lib/cad/types';
 import { PanelSection, Row } from './PropertiesPanel';
 
@@ -32,6 +33,7 @@ const TOOL_HELP: Record<ToolMode, string> = {
 
 export function AnalysisPanel(props: AnalysisPanelProps) {
   const { model, tool, section, measurements } = props;
+  const { t } = useT();
 
   return (
     <div className="min-h-0 flex-1 overflow-auto" data-testid="analysis-panel">
@@ -58,19 +60,19 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
         )}
       </PanelSection>
 
-      <PanelSection title="Bounding box">
+      <PanelSection title={t('Bounding box')}>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Show</span>
-          <Switch checked={props.boundingBoxVisible} onChange={props.onBoundingBoxToggle} label="Show bounding box" />
+          <span className="text-[13px] text-mist-200">{t('Show')}</span>
+          <Switch checked={props.boundingBoxVisible} onChange={props.onBoundingBoxToggle} label={t('Show bounding box')} />
         </label>
         <div className="flex gap-1.5 py-1">
           <ToolButton
-            label="Whole model"
+            label={t('Whole model')}
             active={props.boundingBoxScope === 'model'}
             onClick={() => props.onBoundingBoxScope('model')}
           />
           <ToolButton
-            label="Selection"
+            label={t('Selection')}
             active={props.boundingBoxScope === 'selection'}
             disabled={!props.hasSelection}
             onClick={() => props.onBoundingBoxScope('selection')}
@@ -79,16 +81,16 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
         <Row label="X" value={formatLength(props.bounds.size.x, model.units)} />
         <Row label="Y" value={formatLength(props.bounds.size.y, model.units)} />
         <Row label="Z" value={formatLength(props.bounds.size.z, model.units)} />
-        <Row label="Diagonal" value={formatLength(props.bounds.diagonal, model.units)} />
+        <Row label={t('Diagonal')} value={formatLength(props.bounds.diagonal, model.units)} />
       </PanelSection>
 
-      <PanelSection title="Section plane">
+      <PanelSection title={t('Section plane')}>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Enabled</span>
+          <span className="text-[13px] text-mist-200">{t('Enabled')}</span>
           <Switch
             checked={section.enabled}
             onChange={(enabled) => props.onSectionChange({ enabled })}
-            label="Enable section plane"
+            label={t('Enable section plane')}
             testId="section-toggle"
           />
         </label>
@@ -107,7 +109,7 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
 
         <div className="py-1.5">
           <div className="flex items-baseline justify-between">
-            <span className="kv-key">Position</span>
+            <span className="kv-key">{t('Position')}</span>
             <span className="kv-value">{formatLength(props.sectionCoordinate, model.units)}</span>
           </div>
           <input
@@ -119,40 +121,40 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
             disabled={!section.enabled}
             onChange={(event) => props.onSectionChange({ position: Number(event.target.value) })}
             className="mt-2 w-full accent-accent disabled:opacity-40"
-            aria-label="Section plane position"
+            aria-label={t('Section plane position')}
             data-testid="section-position"
           />
         </div>
 
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Flip direction</span>
+          <span className="text-[13px] text-mist-200">{t('Flip direction')}</span>
           <Switch
             checked={section.flipped}
             disabled={!section.enabled}
             onChange={(flipped) => props.onSectionChange({ flipped })}
-            label="Flip section direction"
+            label={t('Flip section direction')}
           />
         </label>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Cap cut surface</span>
+          <span className="text-[13px] text-mist-200">{t('Cap cut surface')}</span>
           <Switch
             checked={section.showCap}
             disabled={!section.enabled}
             onChange={(showCap) => props.onSectionChange({ showCap })}
-            label="Cap the cut surface"
+            label={t('Cap the cut surface')}
           />
         </label>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Hatch</span>
+          <span className="text-[13px] text-mist-200">{t('Hatch')}</span>
           <Switch
             checked={section.hatch}
             disabled={!section.enabled || !section.showCap}
             onChange={(hatch) => props.onSectionChange({ hatch })}
-            label="Hatch the cut surface"
+            label={t('Hatch the cut surface')}
           />
         </label>
         <p className="pt-1.5 text-[12px] leading-relaxed text-mist-500">
-          The cap is computed from the solid itself, so hollow parts stay hollow in the cut.
+          {t('The cap is computed from the solid itself, so hollow parts stay hollow in the cut.')}
         </p>
       </PanelSection>
 

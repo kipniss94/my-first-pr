@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { currentThemeName, onThemeChange, type Theme } from '@/lib/prefs';
 import { captureCanvas } from '@/lib/thumbnail';
 import { findEdgeAtPoint, faceIndexForTriangle, snapToVertex } from './geometry';
 import { SectionController } from './section';
@@ -23,6 +24,11 @@ export interface SceneCallbacks {
 const SELECT_COLOR = new THREE.Color(0xff8a3d);
 const EDGE_COLOR = new THREE.Color(0x2a3444);
 const MEASURE_COLOR = 0xf5a524;
+/** Background and ground grid, per interface theme. */
+const PALETTES: Record<Theme, { background: number; gridMajor: number; gridMinor: number }> = {
+  dark: { background: 0x0e131b, gridMajor: 0x33405a, gridMinor: 0x1d2534 },
+  light: { background: 0xe6eaf0, gridMajor: 0x98a4b6, gridMinor: 0xc4ccd7 },
+};
 /** Building edge geometry for a huge mesh freezes the tab; skip it instead. */
 const EDGE_TRIANGLE_LIMIT = 400_000;
 
@@ -62,6 +68,12 @@ export class CadScene {
   private opacity = 1;
   private colorOverride: string | null = null;
 
+  private palette = PALETTES[currentThemeName()];
+  private readonly stopThemeWatch: () => void;
+  /** Where the ground grid sits and how big it is, to rebuild it in another colour. */
+  private gridSpan = 10;
+  private gridCentre = new THREE.Vector3();
+
   private dirty = true;
   private disposed = false;
   private frameHandle = 0;
@@ -84,7 +96,7 @@ export class CadScene {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x0e131b, 1);
+    this.renderer.setClearColor(this.palette.background, 1);
     // Local clipping (not global) so the section cap can stay unclipped.
     this.renderer.localClippingEnabled = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -114,9 +126,10 @@ export class CadScene {
 
     this.setupEnvironment();
 
-    this.grid = new THREE.GridHelper(10, 10, 0x33405a, 0x1d2534);
+    this.grid = new THREE.GridHelper(10, 10, this.palette.gridMajor, this.palette.gridMinor);
     this.grid.visible = false;
     this.scene.add(this.grid);
+    this.stopThemeWatch = onThemeChange((theme) => this.setTheme(theme));
 
     this.annotations.name = 'annotations';
     this.scene.add(this.annotations);
@@ -133,6 +146,32 @@ export class CadScene {
   }
 
   /* ------------------------------ environment ----------------------------- */
+
+  /** Repaint the background and the grid for the interface theme. */
+  setTheme(theme: Theme): void {
+    this.palette = PALETTES[theme];
+    this.renderer.setClearColor(this.palette.background, 1);
+    this.rebuildGrid();
+    this.requestRender();
+  }
+
+  /** The CAD convention here is Z-up, so the grid is rotated into the XY plane. */
+  private rebuildGrid(): void {
+    const wasVisible = this.grid.visible;
+    this.grid.removeFromParent();
+    this.grid.geometry.dispose();
+    (this.grid.material as THREE.Material).dispose();
+    const grid = new THREE.GridHelper(this.gridSpan, 20, this.palette.gridMajor, this.palette.gridMinor);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.copy(this.gridCentre);
+    const gridMaterial = grid.material as THREE.Material;
+    gridMaterial.transparent = true;
+    gridMaterial.opacity = 0.35;
+    gridMaterial.depthWrite = false;
+    grid.visible = wasVisible;
+    this.scene.add(grid);
+    this.grid = grid;
+  }
 
   private setupEnvironment(): void {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
@@ -187,24 +226,13 @@ export class CadScene {
     this.camera.updateProjectionMatrix();
 
     // Rebuild the ground grid at the model's scale and sit it under the part.
-    // The CAD convention here is Z-up, so the grid is rotated into the XY plane.
-    const wasVisible = this.grid.visible;
-    this.grid.removeFromParent();
-    this.grid.geometry.dispose();
-    const grid = new THREE.GridHelper(span * 4, 20, 0x33405a, 0x1d2534);
-    grid.rotation.x = Math.PI / 2;
-    grid.position.set(
+    this.gridSpan = span * 4;
+    this.gridCentre.set(
       (this.bounds.min.x + this.bounds.max.x) / 2,
       (this.bounds.min.y + this.bounds.max.y) / 2,
       this.bounds.min.z,
     );
-    const gridMaterial = grid.material as THREE.Material;
-    gridMaterial.transparent = true;
-    gridMaterial.opacity = 0.35;
-    gridMaterial.depthWrite = false;
-    grid.visible = wasVisible;
-    this.scene.add(grid);
-    this.grid = grid;
+    this.rebuildGrid();
 
     this.section.setModel(model.parts, this.bounds);
     this.applyDisplayMode();
@@ -859,6 +887,7 @@ export class CadScene {
 
   dispose(): void {
     this.disposed = true;
+    this.stopThemeWatch();
     cancelAnimationFrame(this.frameHandle);
     this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
