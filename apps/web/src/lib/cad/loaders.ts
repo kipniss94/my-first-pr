@@ -16,6 +16,34 @@ export function createPartMaterial(color: number | string = DEFAULT_PART_COLOR):
   });
 }
 
+/**
+ * A colour attribute from per-face colours: each face range's vertices take
+ * its colour, the rest the mesh's. False when there is nothing to paint.
+ */
+function paintFaces(
+  geometry: THREE.BufferGeometry,
+  indices: Uint32Array,
+  faceRanges: number[] | undefined,
+  faceColors: (string | null)[] | undefined,
+  meshColor: string | undefined,
+): boolean {
+  if (!faceRanges || !faceColors || faceColors.length * 2 !== faceRanges.length) return false;
+  const count = geometry.getAttribute('position').count;
+  const colors = new Float32Array(count * 3);
+  const base = new THREE.Color(meshColor ?? DEFAULT_PART_COLOR);
+  for (let v = 0; v < count; v += 1) base.toArray(colors, v * 3);
+  const color = new THREE.Color();
+  faceColors.forEach((hex, face) => {
+    if (!hex) return;
+    color.set(hex);
+    for (let triangle = faceRanges[face * 2]; triangle <= faceRanges[face * 2 + 1]; triangle += 1) {
+      for (let corner = 0; corner < 3; corner += 1) color.toArray(colors, indices[triangle * 3 + corner] * 3);
+    }
+  });
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return true;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Normalized geometry (STEP / IGES / BREP)                                   */
 /* -------------------------------------------------------------------------- */
@@ -97,7 +125,10 @@ export async function loadNmg(
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    const mesh = new THREE.Mesh(geometry, createPartMaterial(meshSpec.color ?? DEFAULT_PART_COLOR));
+    // Faces of their own colour: vertex colours, the material white beneath them.
+    const faceColored = paintFaces(geometry, indices, meshSpec.faceRanges, meshSpec.faceColors, meshSpec.color);
+    const mesh = new THREE.Mesh(geometry, createPartMaterial(faceColored ? 0xffffff : (meshSpec.color ?? DEFAULT_PART_COLOR)));
+    if (faceColored) (mesh.material as THREE.MeshStandardMaterial).vertexColors = true;
     mesh.name = meshSpec.name;
     mesh.castShadow = false;
     mesh.receiveShadow = false;

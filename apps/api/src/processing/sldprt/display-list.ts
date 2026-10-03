@@ -36,7 +36,7 @@
  * volume, in 5 ms on the median part.
  */
 
-import type { PackageEntry } from './container.js';
+import { unwrapCodec, type PackageEntry } from './container.js';
 
 const STRIP_TABLE = [4, 8, 2];
 const VERTEX_ARRAY = [12, 100, 2];
@@ -50,6 +50,8 @@ export interface DisplayFace {
   normals: Float32Array;
   /** Triangle-strip lengths; they sum to the vertex count. */
   strips: number[];
+  /** Its colour as SolidWorks shows it, 0–255, when the file says. */
+  color?: [number, number, number];
 }
 
 function header(data: Buffer, at: number, expected: number[]): boolean {
@@ -67,6 +69,7 @@ function readFloats(data: Buffer, at: number, count: number): Float32Array {
 /** Every face tessellation in one display-list entry. */
 export function decodeDisplayList(data: Buffer): DisplayFace[] {
   const faces: DisplayFace[] = [];
+  const spans: { at: number; end: number }[] = [];
   let at = 0;
 
   while (at + 20 <= data.length) {
@@ -107,10 +110,155 @@ export function decodeDisplayList(data: Buffer): DisplayFace[] {
       normals: readFloats(data, normalHeader + 16, count * 3),
       strips,
     });
+    spans.push({ at, end: normalHeader + 16 + count * 12 });
     at = normalHeader + 16 + count * 12;
   }
 
+  readColours(data, spans).forEach((color, k) => {
+    if (color) faces[k].color = color;
+  });
   return faces;
+}
+
+/* --------------------------------- colour --------------------------------- */
+
+/**
+ * The appearance inside a visual-properties object: its material's name, a
+ * small flag, the colour as R G B 0, then 1.0f. The first one in [from, to).
+ */
+export function appearance(
+  data: Buffer,
+  from: number,
+  to: number,
+): { color: [number, number, number] | null; start: number; end: number } | null {
+  for (let i = Math.max(0, from); i + 13 <= Math.min(to, data.length); i += 1) {
+    if (data[i] !== 0xff || data[i + 1] !== 0xfe || data[i + 2] !== 0xff) continue;
+    const n = data[i + 3];
+    const end = i + 4 + n * 2;
+    if (n > 0 && end + 9 <= data.length && data[end] <= 3 && data[end + 4] === 0 && data.readFloatLE(end + 5) === 1) {
+      const color: [number, number, number] = [data[end + 1], data[end + 2], data[end + 3]];
+      // A grey metal saved with a loud colour (pure red on a stainless bolt)
+      // is a material SolidWorks did not find, not the colour it showed.
+      const material = data.subarray(i + 4, end).toString('utf16le');
+      const max = Math.max(...color);
+      const loud = max > 0 && (max - Math.min(...color)) / max > 0.6;
+      const grey = /steel|alumin|nickel|chrom|zinc|galvani|iron|titan/i.test(material);
+      return { color: loud && grey ? null : color, start: i, end: end + 9 };
+    }
+  }
+  return null;
+}
+
+/** What stands in front of a face's colour pointer, in the two record versions seen. */
+const SLOTS = [Buffer.from([1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]), Buffer.from([2, 0, 0, 0, 1, 0, 0, 0])];
+const PROPS_CLASS = Buffer.from('moVisualProperties_c', 'latin1');
+const BODY_CLASS = Buffer.from('uoTempBodyTessData_c', 'latin1');
+const FACE_CLASS = Buffer.from('uoTempFaceTessData_c', 'latin1');
+
+/**
+ * Each face's colour, as SolidWorks drew it.
+ *
+ * The display list is an MFC archive, and colours are visual-properties
+ * objects (`moVisualProperties_c`) in it. One stands before each body: the
+ * body's colour. Each face record ends, after its arrays, with a pointer to
+ * its own — behind `01 00 00 00 FF FF FF FF`, or in older files behind
+ * `02 00 00 00 01 00 00 00` and given twice: 0 when the face has none (it
+ * takes the body's), a new object (the class index | 0x8000, or the class
+ * defined there), or the load index of one stored before. MFC numbers
+ * classes and objects in the order they are read, so counting from the face
+ * class — whose index is the tag in front of the second face, the first face
+ * following its class's definition — gives every object its index: one per
+ * face and body, one per colour stored. A pointer that does not lead to a
+ * colour leaves the body's.
+ *
+ * Checked against the pictures SolidWorks saves in the file: a diode's black
+ * body, white band and yellow leads come out face by face.
+ */
+function readColours(data: Buffer, spans: { at: number; end: number }[]): ([number, number, number] | null)[] {
+  if (spans.length === 0) return [];
+  // The first body's colour: the last appearance before its first face.
+  let body: [number, number, number] | null = null;
+  for (let from = Math.max(0, spans[0].at - 4000); ; ) {
+    const found = appearance(data, from, spans[0].at);
+    if (!found) break;
+    body = found.color;
+    from = found.end;
+  }
+  const own: ([number, number, number] | null)[] = spans.map(() => null);
+  const bodies: ([number, number, number] | null)[] = spans.map(() => body);
+
+  // Object indices, when the face class can be placed: right after the body
+  // class, which comes right after the body's colour (one object each).
+  const faceClassAt = data.lastIndexOf(FACE_CLASS, spans[0].at);
+  const bodyClassAt = faceClassAt >= 0 ? data.lastIndexOf(BODY_CLASS, faceClassAt) : -1;
+  const tag = spans.length > 1 ? data.readUInt16LE(spans[1].at - 10) : 0;
+  const counting = faceClassAt >= 0 && spans[0].at - faceClassAt <= 40 && (tag & 0x8000) !== 0;
+  let counter = tag & 0x7fff;
+  const colours = new Map<number, [number, number, number]>();
+  if (counting && body && bodyClassAt >= 0 && faceClassAt - bodyClassAt <= 40) colours.set(counter - 3, body);
+  let classSeen = data.lastIndexOf(PROPS_CLASS, spans[0].at) >= 0;
+
+  for (let k = 0; k < spans.length; k += 1) {
+    const from = spans[k].end;
+    const to = k + 1 < spans.length ? spans[k + 1].at - 10 : Math.min(data.length, spans[k].end + 4000);
+    counter += 1; // this face
+    bodies[k] = body;
+
+    // Every colour stored new in this stretch, each with its index.
+    const stored: { start: number; end: number; index: number; color: [number, number, number] | null }[] = [];
+    const classAt = classSeen ? -1 : data.indexOf(PROPS_CLASS, from);
+    for (let cursor = from; ; ) {
+      const found = appearance(data, cursor, to);
+      if (!found) break;
+      if (classAt >= 0 && classAt < found.start && !classSeen) {
+        counter += 1;
+        classSeen = true;
+      }
+      counter += 1;
+      if (found.color) colours.set(counter, found.color);
+      stored.push({ start: found.start, end: found.end, index: counter, color: found.color });
+      cursor = found.end;
+    }
+
+    // A body starting with the next face: its colour stored just before its
+    // tag, the tag and face count, then the face's tag.
+    const next = k + 1 < spans.length ? spans[k + 1].at : -1;
+    const bodyNext =
+      next >= 0 &&
+      next - 14 > from &&
+      (data.readUInt16LE(next - 14) & 0x8000) !== 0 &&
+      data.readUInt16LE(next - 12) > 0 &&
+      data.readUInt16LE(next - 12) < 0x8000;
+    const last = stored[stored.length - 1];
+    const bodyColour = bodyNext && last && next - 14 - last.end < 400 ? last : null;
+    // After the last face come the list's own closing records, colour among them.
+    const mine = bodyColour ? stored.slice(0, -1) : next < 0 ? stored.slice(0, 1) : stored;
+
+    // The face's own colour: one pointer per display state. Stored new here
+    // — the last state's wins — or one stored before: in the newer records
+    // (one state, `01 00 00 00 FF FF FF FF`) the pointer sits 26 bytes before
+    // the next face's tag; in the older ones (`02 00 00 00`, then state 1 and
+    // its pointer, state 2 and its) it is the second, else the first.
+    if (mine.length > 0) own[k] = mine[mine.length - 1].color;
+    else if (counting) {
+      let pointer = 0;
+      if (to - 34 >= from && data.subarray(to - 34, to - 26).equals(SLOTS[0])) pointer = data.readUInt16LE(to - 26);
+      else {
+        for (let s = data.indexOf(SLOTS[1], from); s >= 0 && s + 16 <= to; s = data.indexOf(SLOTS[1], s + 1)) {
+          if (data.readUInt32LE(s + 10) !== 2) continue;
+          const second = data.readUInt16LE(s + 14);
+          pointer = second !== 0 && second < 0x8000 ? second : data.readUInt16LE(s + 8);
+        }
+      }
+      if (pointer > 0 && pointer < 0x8000) own[k] = colours.get(pointer) ?? null;
+    }
+
+    if (bodyNext) {
+      if (bodyColour) body = bodyColour.color;
+      counter += 1;
+    }
+  }
+  return own.map((color, k) => color ?? bodies[k]);
 }
 
 /**
@@ -136,6 +284,8 @@ export interface IndexedMesh {
   indices: Uint32Array;
   /** Per face, the first and last triangle index, for picking a face. */
   faceRanges: { first: number; last: number }[];
+  /** Per face range, its colour (0–255), when the file says. */
+  faceColors?: ([number, number, number] | null)[];
   triangles: number;
 }
 
@@ -159,6 +309,7 @@ export function toIndexedMesh(faces: DisplayFace[]): IndexedMesh {
   const normals = new Float32Array(vertexCount * 3);
   const indices = new Uint32Array(triangleCount * 3);
   const faceRanges: { first: number; last: number }[] = [];
+  const faceColors: ([number, number, number] | null)[] = [];
 
   let vertexBase = 0;
   let triangle = 0;
@@ -184,11 +335,15 @@ export function toIndexedMesh(faces: DisplayFace[]): IndexedMesh {
       }
       stripStart += length;
     }
-    if (triangle > firstTriangle) faceRanges.push({ first: firstTriangle, last: triangle - 1 });
+    if (triangle > firstTriangle) {
+      faceRanges.push({ first: firstTriangle, last: triangle - 1 });
+      faceColors.push(face.color ?? null);
+    }
     vertexBase += n;
   }
 
-  return { positions, normals, indices, faceRanges, triangles: triangle };
+  const coloured = faceColors.some(Boolean);
+  return { positions, normals, indices, faceRanges, ...(coloured ? { faceColors } : {}), triangles: triangle };
 }
 
 function agreesWithNormals(face: DisplayFace, a: number, b: number, c: number): boolean {
@@ -210,6 +365,80 @@ function agreesWithNormals(face: DisplayFace, a: number, b: number, c: number): 
 }
 
 /** Surface area (mm²) and enclosed volume (mm³) — the checks the tests rely on. */
+type Rgb = [number, number, number];
+
+/**
+ * The part's colour from `ThirdPtyStore/VisualStates`, for a mesh that does
+ * not carry its own (the B-rep, triangulated here): its bodies' colour when
+ * they all share one, else the part's. Feature and face colours are left
+ * out — nothing ties them to the B-rep's faces here.
+ */
+export function visualStatesColour(entries: PackageEntry[]): Rgb | null {
+  const raw = entries.find((entry) => entry.name === 'ThirdPtyStore/VisualStates')?.data;
+  const data = raw ? (unwrapCodec(raw) ?? raw) : null;
+  if (!data) return null;
+  const at = (name: string, from = 0) => data.indexOf(Buffer.from(name, 'latin1'), from);
+  const unit = at('moUnitComponent_c');
+  if (unit < 0) return null;
+  const later = ['moCompSolidBody_c', 'moCompFeature_c', 'moCompFace_c'].map((name) => at(name, unit)).filter((p) => p > 0);
+  const colours = (from: number, to: number) => {
+    const found: Rgb[] = [];
+    for (let cursor = from; ; ) {
+      const next = appearance(data, cursor, to);
+      if (!next) break;
+      if (next.color) found.push(next.color);
+      cursor = next.end;
+    }
+    return found;
+  };
+  const part = colours(unit, later.length > 0 ? Math.min(...later) : data.length)[0] ?? null;
+  const body = at('moCompSolidBody_c', unit);
+  if (body > 0) {
+    const stops = ['moCompFeature_c', 'moCompFace_c'].map((name) => at(name, body)).filter((p) => p > 0);
+    const bodies = colours(body, stops.length > 0 ? Math.min(...stops) : data.length);
+    if (bodies.length > 0 && bodies.every((c) => c.join() === bodies[0].join())) return bodies[0];
+  }
+  return part;
+}
+
+/**
+ * A mesh's faces as the geometry writer takes them, each with its colour
+ * (0–1), and the colour most of its triangles have as the mesh's own. A
+ * mesh without colours of its own takes `fallback` (0–255) throughout.
+ */
+export function colouredFaces(
+  mesh: IndexedMesh,
+  fallback: Rgb | null = null,
+): { color?: Rgb; brep_faces: { first: number; last: number; color: Rgb | null }[] } {
+  const colours = mesh.faceColors ?? mesh.faceRanges.map(() => fallback);
+  const unit = (c: Rgb | null | undefined): Rgb | null => (c ? [c[0] / 255, c[1] / 255, c[2] / 255] : null);
+  const tally = new Map<string, { colour: Rgb; triangles: number }>();
+  mesh.faceRanges.forEach((range, k) => {
+    const colour = colours[k];
+    if (!colour) return;
+    const entry = tally.get(colour.join()) ?? { colour, triangles: 0 };
+    entry.triangles += range.last - range.first + 1;
+    tally.set(colour.join(), entry);
+  });
+  const main = [...tally.values()].sort((a, b) => b.triangles - a.triangles)[0];
+  return {
+    ...(main ? { color: unit(main.colour)! } : {}),
+    brep_faces: mesh.faceRanges.map((range, k) => ({ ...range, color: unit(colours[k]) })),
+  };
+}
+
+/** The colour most of a display mesh's faces have, 0–255. */
+export function mainColour(faces: DisplayFace[]): Rgb | null {
+  const tally = new Map<string, { colour: Rgb; vertices: number }>();
+  for (const face of faces) {
+    if (!face.color) continue;
+    const entry = tally.get(face.color.join()) ?? { colour: face.color, vertices: 0 };
+    entry.vertices += face.positions.length;
+    tally.set(face.color.join(), entry);
+  }
+  return [...tally.values()].sort((a, b) => b.vertices - a.vertices)[0]?.colour ?? null;
+}
+
 export function measureMesh(mesh: IndexedMesh): { area: number; volume: number; size: [number, number, number] } {
   const p = mesh.positions;
   const lo = [Infinity, Infinity, Infinity];

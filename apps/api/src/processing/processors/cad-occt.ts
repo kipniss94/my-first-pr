@@ -220,6 +220,10 @@ export async function writeNmg(
     for (const face of mesh.brep_faces ?? []) {
       faceRanges.push(face.first, face.last);
     }
+    // Faces of their own colour, when not all are the mesh's.
+    const color = toHex(mesh.color);
+    const faceColors = (mesh.brep_faces ?? []).map((face) => toHex(face.color ?? undefined) ?? null);
+    const varied = faceColors.some((hex) => hex !== null && hex !== color);
 
     meshes.push({
       id: index,
@@ -227,8 +231,9 @@ export async function writeNmg(
       position: { offset: positionAccessor.offset, count: positionAccessor.count },
       normal: normalAccessor,
       index: { offset: indexAccessor.offset, count: indexAccessor.count },
-      color: toHex(mesh.color),
+      color,
       faceRanges: faceRanges.length > 0 ? faceRanges : undefined,
+      ...(varied && faceRanges.length > 0 ? { faceColors } : {}),
     });
   });
 

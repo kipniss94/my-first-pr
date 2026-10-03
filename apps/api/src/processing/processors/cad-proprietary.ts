@@ -8,7 +8,15 @@ import { documentEntries, readAssemblyTree } from '../sldprt/assembly.js';
 import { findBrepSource, meshFromBrep } from '../sldprt/brep-mesh.js';
 import { findModelPartition, findParasolidPartitions, findPreviewPng, unwrapCodec, type PackageEntry } from '../sldprt/container.js';
 import { isBinaryXt, readXt } from '../sldprt/xt-reader.js';
-import { findDisplayMesh, measureMesh, toIndexedMesh, type IndexedMesh } from '../sldprt/display-list.js';
+import {
+  colouredFaces,
+  findDisplayMesh,
+  mainColour,
+  measureMesh,
+  toIndexedMesh,
+  visualStatesColour,
+  type IndexedMesh,
+} from '../sldprt/display-list.js';
 import { readDrawing, sheetSvg, type Drawing } from '../sldprt/drawing.js';
 import { processOcct, writeNmg } from './cad-occt.js';
 
@@ -42,10 +50,19 @@ function partMesh(entries: PackageEntry[]): IndexedMesh | null {
   const faces = findDisplayMesh(entries);
   if (faces.length > 0) {
     const mesh = toIndexedMesh(faces);
-    if (mesh.triangles > 0) return solidInstead(entries, faces.length)?.mesh ?? mesh;
+    if (mesh.triangles > 0) {
+      const solid = solidInstead(entries, faces.length)?.mesh;
+      return solid ? coloured(solid, mainColour(faces) ?? visualStatesColour(entries)) : mesh;
+    }
   }
   const { source } = findBrepSource(entries);
-  return source ? (meshFromBrep(source.model)?.mesh ?? null) : null;
+  const mesh = source ? (meshFromBrep(source.model)?.mesh ?? null) : null;
+  return mesh ? coloured(mesh, visualStatesColour(entries)) : null;
+}
+
+/** A mesh without colours of its own, given one throughout. */
+function coloured(mesh: IndexedMesh, colour: [number, number, number] | null): IndexedMesh {
+  return colour && !mesh.faceColors ? { ...mesh, faceColors: mesh.faceRanges.map(() => colour) } : mesh;
 }
 
 /**
@@ -226,7 +243,7 @@ async function configurationMeshes(
             name,
             attributes: { position: { array: built.mesh.positions }, normal: { array: built.mesh.normals } },
             index: { array: built.mesh.indices },
-            brep_faces: built.mesh.faceRanges.map((range) => ({ ...range, color: null })),
+            ...colouredFaces(built.mesh, visualStatesColour(entries)),
           },
         ],
       },
@@ -360,7 +377,8 @@ async function processAssembly(
     name: string;
     attributes: { position: { array: Float32Array }; normal: { array: Float32Array } };
     index: { array: Uint32Array };
-    brep_faces: { first: number; last: number; color: null }[];
+    color?: [number, number, number];
+    brep_faces: { first: number; last: number; color: [number, number, number] | null }[];
   }[] = [];
   let triangles = 0;
   let drawnInside = 0;
@@ -379,7 +397,7 @@ async function processAssembly(
       name: instance.path[instance.path.length - 1],
       attributes: { position: { array: placed.positions }, normal: { array: placed.normals } },
       index: { array: mesh.indices },
-      brep_faces: mesh.faceRanges.map((range) => ({ ...range, color: null })),
+      ...colouredFaces(mesh),
     });
     triangles += mesh.triangles;
     drawnInside += 1;
@@ -508,7 +526,14 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
   });
 
   const name = request.displayName.replace(/\.[^.]+$/, '') || 'Part';
-  const drawMesh = async (mesh: IndexedMesh, faceCount: number, producer: string, extra: Record<string, unknown>, warnings: string[]): Promise<JobResult> => {
+  const drawMesh = async (
+    mesh: IndexedMesh,
+    faceCount: number,
+    producer: string,
+    extra: Record<string, unknown>,
+    warnings: string[],
+    colour: [number, number, number] | null = null,
+  ): Promise<JobResult> => {
     ctx.progress('preparing-geometry', 70);
     if (model) await fs.writeFile(path.join(request.assetsDir, 'geometry.x_t'), model.data);
     const manifest = await writeNmg(
@@ -520,7 +545,7 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
             name,
             attributes: { position: { array: mesh.positions }, normal: { array: mesh.normals } },
             index: { array: mesh.indices },
-            brep_faces: mesh.faceRanges.map((range) => ({ ...range, color: null })),
+            ...colouredFaces(mesh, colour),
           },
         ],
       },
@@ -581,6 +606,7 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
           [
             `The picture SolidWorks stored in this file is from an earlier state of the part (${faces.length} faces; the part has ${solid.stats.faces}), so it is drawn from its exact geometry instead.`,
           ],
+          mainColour(faces) ?? visualStatesColour(entries),
         );
       }
       return drawMesh(
@@ -627,6 +653,7 @@ export async function processProprietaryCad(ctx: ProcessorContext): Promise<JobR
           }))),
         },
         warnings,
+        visualStatesColour(entries),
       );
     }
   }

@@ -190,6 +190,11 @@ export interface NmgMesh {
    * instead of the whole solid. Absent for mesh-native formats.
    */
   faceRanges?: number[];
+  /**
+   * Per face range, its sRGB hex colour — present only when the faces are not
+   * all the colour of the mesh. `null` takes `color`.
+   */
+  faceColors?: (string | null)[];
 }
 
 export interface NmgNode {

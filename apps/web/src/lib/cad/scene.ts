@@ -436,9 +436,12 @@ export class CadScene {
         standard.depthWrite = this.opacity >= 1;
         if ('color' in standard) {
           const base = this.originalColors.get(part.id);
-          if (this.selectedPartId === part.id) standard.color.copy(SELECT_COLOR);
+          const selected = this.selectedPartId === part.id;
+          if (selected) standard.color.copy(SELECT_COLOR);
           else if (this.colorOverride) standard.color.set(this.colorOverride);
           else if (base) standard.color.copy(base);
+          // Faces coloured one by one: their colours, unless one colour stands for the whole part.
+          standard.vertexColors = Boolean(part.mesh.geometry.getAttribute('color')) && !selected && !this.colorOverride;
         }
         standard.needsUpdate = true;
       }
