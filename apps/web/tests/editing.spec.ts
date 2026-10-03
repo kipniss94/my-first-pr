@@ -26,8 +26,17 @@ test.describe('editing documents', () => {
 
     const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('editor-save').click()]);
     expect(download.suggestedFilename()).toBe('report (edited).pdf');
-    const saved = await PDFDocument.load(await readFile(await download.path()));
+    const bytes = await readFile(await download.path());
+    const saved = await PDFDocument.load(bytes);
     expect(saved.getPageCount()).toBe(1);
+    // The old heading is gone from the file itself, not just covered up.
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(bytes), verbosity: 0 }).promise;
+    const items = (await (await pdf.getPage(1)).getTextContent()).items;
+    const text = items.map((item) => ('str' in item ? item.str : '')).join(' ');
+    expect(text).toContain('Edited heading');
+    expect(text).not.toContain('DocuView PDF fixture');
+    expect(text).toContain('Page one of two.');
   });
 
   test('a workbook cell is changed and a sheet deleted, in the .xlsx itself', async ({ page }) => {
