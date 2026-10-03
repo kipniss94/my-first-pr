@@ -101,6 +101,24 @@ describe('drawing sheets', () => {
     assert.match(svg, /textLength="5.2"/);
   });
 
+  it('reads the other sheet layout, where the border pen comes before the size', () => {
+    // The pen record, then height, width and name with no sheet header of its own.
+    const other = Buffer.concat([
+      Buffer.alloc(32),
+      pen(0x000000),
+      segment(0.01, 0.01, 0.2, 0.01),
+      pen(0x000000),
+      f64(0.42, 0.297),
+      text('1-Active'),
+      Buffer.alloc(16),
+    ]);
+    const read = readDrawing([{ name: 'Contents/DisplayLists', offset: 0, data: other }]);
+    assert.ok(read);
+    assert.equal(read.sheets.length, 1);
+    assert.equal(read.sheets[0].name, '1');
+    assert.deepEqual([read.sheets[0].width, read.sheets[0].height], [0.297, 0.42]);
+  });
+
   it('says so when a file keeps no sheet graphics', () => {
     assert.equal(readDrawing([]), null);
   });

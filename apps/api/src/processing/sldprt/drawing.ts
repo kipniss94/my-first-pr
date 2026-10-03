@@ -323,14 +323,30 @@ interface SheetRecord {
 /** A group record carrying a sheet: height, width, then its name. */
 function readSheets(dl: Buffer): SheetRecord[] {
   const sheets: SheetRecord[] = [];
+  const plausible = (height: number, width: number) => height > 0.05 && height < 5 && width > 0.05 && width < 5;
   for (let i = 0; i + 60 < dl.length; i += 1) {
-    if (dl.readUInt32LE(i + 4) !== 0x1e) continue;
-    const height = dl.readDoubleLE(i + 36);
-    const width = dl.readDoubleLE(i + 44);
-    if (!(height > 0.05 && height < 5 && width > 0.05 && width < 5)) continue;
-    const name = cstring(dl, i + 52);
-    if (!name || !name.text) continue;
-    sheets.push({ at: i, name: name.text, width, height });
+    const kind = dl.readUInt32LE(i + 4);
+    if (kind === 0x1e) {
+      const height = dl.readDoubleLE(i + 36);
+      const width = dl.readDoubleLE(i + 44);
+      if (!plausible(height, width)) continue;
+      const name = cstring(dl, i + 52);
+      if (!name || !name.text) continue;
+      sheets.push({ at: i, name: name.text, width, height });
+      continue;
+    }
+    // Another layout (about one drawing in six): the sheet's border pen comes
+    // first, its line style ("CONTINUOUS") and then height, width and name.
+    if (kind === 0x0c && dl.readUInt32LE(i) < 0x400) {
+      const style = cstring(dl, i + 26);
+      if (!style || style.end + 20 > dl.length) continue;
+      const height = dl.readDoubleLE(style.end);
+      const width = dl.readDoubleLE(style.end + 8);
+      if (!plausible(height, width)) continue;
+      const name = cstring(dl, style.end + 16);
+      if (!name || !name.text) continue;
+      sheets.push({ at: i, name: name.text, width, height });
+    }
   }
   return sheets;
 }
@@ -1229,13 +1245,35 @@ export function drawingDiagnostics(entries: PackageEntry[]) {
   const buckets = vb ? readBuckets(vb) : [];
   return {
     sheets: readSheets(dl).map((s) => ({ name: s.name, width: s.width, height: s.height, at: s.at })),
-    views: views.map((v) => ({ at: v.at, scale: v.scale, origin: v.origin, frame: v.frame, direction: v.rotation[2] })),
+    views: views.map((v) => ({
+      at: v.at,
+      scale: v.scale,
+      origin: v.origin,
+      offset: v.offset,
+      rotation: v.rotation,
+      frame: v.frame,
+      direction: v.rotation[2],
+    })),
     buckets: buckets.map((b) => ({
       direction: b.direction,
       edges: b.edges.length,
       fits: views.map((v) => {
         const { inside, all } = fit(v, b);
         return all ? Math.round((inside / all) * 100) : 0;
+      }),
+      /** Where its edges land on the sheet through each view, as [x0, y0, x1, y1]. */
+      placed: views.map((v) => {
+        const box = [Infinity, Infinity, -Infinity, -Infinity];
+        for (const edge of b.edges) {
+          for (const p of edge) {
+            const [x, y] = place(v, p);
+            box[0] = Math.min(box[0], x);
+            box[1] = Math.min(box[1], y);
+            box[2] = Math.max(box[2], x);
+            box[3] = Math.max(box[3], y);
+          }
+        }
+        return box;
       }),
     })),
   };
