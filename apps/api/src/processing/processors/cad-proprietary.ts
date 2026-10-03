@@ -5,6 +5,7 @@ import { ProcessingError, type ProcessorContext } from '../context.js';
 import { convertToStep } from '../converter.js';
 import { inspectNativeCad } from '../native-cad.js';
 import { documentEntries, readAssemblyTree } from '../sldprt/assembly.js';
+import { readStoredGraphics } from '../sldprt/stored-graphics.js';
 import { findBrepSource, meshFromBrep } from '../sldprt/brep-mesh.js';
 import { findModelPartition, findParasolidPartitions, findPreviewPng, unwrapCodec, type PackageEntry } from '../sldprt/container.js';
 import { isBinaryXt, readXt } from '../sldprt/xt-reader.js';
@@ -15,6 +16,7 @@ import {
   measureMesh,
   toIndexedMesh,
   visualStatesColour,
+  type DisplayFace,
   type IndexedMesh,
 } from '../sldprt/display-list.js';
 import { readDrawing, sheetSvg, type Drawing } from '../sldprt/drawing.js';
@@ -438,6 +440,47 @@ async function processAssembly(
     warnings.push(`${tree.unexpanded.length} sub-assembly reference(s) carry no placements of their own and are not shown.`);
   }
 
+  /* --------------- the same parts, from the graphics kept in here ----------- */
+  // Drawn wherever a part's own file has not been added — a Toolbox fastener
+  // from the author's library, say.
+  const stored = readStoredGraphics(entries);
+  const storedMeshes: typeof placedMeshes = [];
+  const storedIds = new Map<DisplayFace[], number | null>();
+  let storedTriangles = 0;
+  const storedOf = external.map((instance) => {
+    const faces = stored?.facesAt(instance.path);
+    if (!faces) return undefined;
+    if (!storedIds.has(faces)) {
+      const mesh = toIndexedMesh(faces);
+      const fits = mesh.triangles > 0 && storedTriangles + mesh.triangles <= MAX_EMBEDDED_TRIANGLES;
+      storedIds.set(faces, fits ? storedMeshes.length : null);
+      if (fits) {
+        storedTriangles += mesh.triangles;
+        storedMeshes.push({
+          name: instance.component.replace(/\.[^.]+$/, ''),
+          attributes: { position: { array: mesh.positions }, normal: { array: mesh.normals } },
+          index: { array: mesh.indices },
+          ...colouredFaces(mesh),
+        });
+      }
+    }
+    return storedIds.get(faces) ?? undefined;
+  });
+  let storedGeometry: string | null = null;
+  if (storedMeshes.length > 0) {
+    ctx.progress('preparing-geometry', 88);
+    await writeNmg(
+      { success: true, root: { name, meshes: storedMeshes.map((_, k) => k), children: [] }, meshes: storedMeshes },
+      request.assetsDir,
+      request.size,
+      ctx,
+      'SolidWorks assembly, the graphics it keeps of its parts',
+      'stored',
+    );
+    storedGeometry = `/api/v1/files/${request.fileId}/assets/stored.nmg.json`;
+    ctx.log('info', `stored graphics: ${storedOf.filter((id) => id !== undefined).length} of ${external.length} occurrences, ${storedMeshes.length} parts`);
+  }
+
   const document: NativeCadDocument = {
     application: info.application,
     version: info.version,
@@ -453,8 +496,15 @@ async function processAssembly(
         : `This assembly places ${external.length} part occurrence(s) from ${componentNames.length} part file(s)${
             drawnInside ? `, and ${drawnInside} more saved inside it` : ''
           }. Add the part files — or drop the whole folder — and each part appears where it belongs.`,
-    placements: external.map(({ component, configuration, path, matrix }) => ({ component, configuration, path, matrix })),
+    placements: external.map(({ component, configuration, path, matrix }, k) => ({
+      component,
+      configuration,
+      path,
+      matrix,
+      ...(storedOf[k] !== undefined ? { stored: storedOf[k] } : {}),
+    })),
     geometry3d,
+    storedGeometry,
   };
   await fs.writeFile(path.join(request.assetsDir, 'native.json'), JSON.stringify(document));
   ctx.progress('preparing-geometry', 95);

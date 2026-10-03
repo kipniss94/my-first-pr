@@ -45,6 +45,11 @@ interface CadViewerProps {
    * are put in place; without them they are laid out side by side.
    */
   placements?: AssemblyPlacement[];
+  /**
+   * The graphics the assembly keeps of its parts, one mesh per part in its own
+   * coordinates: drawn where a placement's part file has not been added.
+   */
+  storedSource?: string | null;
   /** Sentence shown under the tree when component placement is approximate. */
   layoutNote?: string;
   onProgress(percent: number): void;
@@ -72,6 +77,7 @@ export function CadViewer({
   fileName,
   components,
   placements,
+  storedSource,
   layoutNote,
   onProgress,
   onReady,
@@ -184,6 +190,9 @@ export function CadViewer({
             : loadMeshFile(source, formatId, fileName, report, controller.signal),
       });
     }
+    if (storedSource && placements?.length) {
+      wanted.push({ key: `stored:${storedSource}`, name: fileName, load: () => loadNmg(storedSource, undefined, controller.signal) });
+    }
     for (const component of components ?? []) {
       wanted.push({
         key: `component:${component.id}`,
@@ -215,6 +224,7 @@ export function CadViewer({
       const cache = loadedRef.current;
       const sources: MergeSource[] = [];
       let primary: CadModel | null = null;
+      let stored: CadModel | null = null;
       const parts: MergeSource[] = [];
       let loadedAny = false;
 
@@ -225,6 +235,10 @@ export function CadViewer({
           if (cancelled) return;
           cache.set(entry.key, model);
           loadedAny = true;
+        }
+        if (entry.key.startsWith('stored:')) {
+          stored = model;
+          continue;
         }
         if (entry.key.startsWith('primary:')) primary = model;
         else parts.push({ name: entry.name, model, configuration: entry.configuration });
@@ -242,7 +256,7 @@ export function CadViewer({
       }
 
       const merged = placements?.length
-        ? placeModels(primary, parts, placements, fileName)
+        ? placeModels(primary, parts, placements, fileName, stored)
         : sources.length === 1 && !components?.length
           ? sources[0].model
           : mergeModels(sources, fileName);
@@ -290,7 +304,7 @@ export function CadViewer({
       cancelled = true;
       controller.abort();
     };
-  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, placements, source]);
+  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, placements, source, storedSource]);
 
   /* ----------------------------- state → scene ---------------------------- */
 

@@ -376,6 +376,11 @@ export interface AssemblyPlacement {
   path: string[];
   /** 4×4 placement, column-major (three.js `Matrix4.fromArray` order), in millimetres. */
   matrix: number[];
+  /**
+   * The mesh in `storedGeometry` the assembly keeps of this part, in the part's
+   * own coordinates: drawn here while the part's file is not at hand.
+   */
+  stored?: number;
 }
 
 /**
@@ -446,6 +451,12 @@ export interface NativeCadDocument {
    * (virtual components) — already placed, as an NMG manifest URL.
    */
   geometry3d?: string | null;
+  /**
+   * The graphics the assembly keeps of the parts in their own files, one mesh
+   * per part, each in the part's own coordinates (NMG manifest URL); a
+   * placement's `stored` names its mesh.
+   */
+  storedGeometry?: string | null;
 }
 
 /* -------------------------------------------------------------------------- */

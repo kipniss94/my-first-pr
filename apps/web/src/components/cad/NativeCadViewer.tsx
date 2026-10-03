@@ -142,7 +142,7 @@ export function NativeCadViewer({
           path: root,
         }
       : null;
-  const showGeometry = renderable.length > 0 || Boolean(document.geometry3d);
+  const showGeometry = renderable.length > 0 || Boolean(document.geometry3d) || Boolean(document.storedGeometry);
 
   return (
     <div className="flex min-h-0 flex-1">
@@ -154,8 +154,9 @@ export function NativeCadViewer({
             mode="nmg"
             fileName={fileName}
             components={renderable}
-            placements={placed || document.geometry3d ? (document.placements ?? []) : undefined}
-            layoutNote={placed || document.geometry3d ? undefined : LAYOUT_NOTE}
+            placements={placed || document.geometry3d || document.storedGeometry ? (document.placements ?? []) : undefined}
+            storedSource={document.storedGeometry ?? null}
+            layoutNote={placed || document.geometry3d || document.storedGeometry ? undefined : LAYOUT_NOTE}
             onProgress={() => undefined}
             onReady={() => undefined}
           />

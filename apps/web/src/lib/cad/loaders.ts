@@ -500,6 +500,7 @@ export function placeModels(
   components: MergeSource[],
   placements: AssemblyPlacement[],
   rootName: string,
+  stored: CadModel | null = null,
 ): CadModel {
   const root = new THREE.Group();
   root.name = rootName;
@@ -564,10 +565,26 @@ export function placeModels(
     const name = source.name.toLowerCase();
     models.set(source.configuration === undefined ? name : `${name}|${source.configuration}`, source.model);
   }
+  // A part whose file has not been added: the mesh the assembly keeps of it.
+  const storedModels = new Map<number, CadModel>();
+  const storedModel = (id: number | undefined): CadModel | undefined => {
+    if (!stored || id === undefined) return undefined;
+    let model = storedModels.get(id);
+    if (!model) {
+      const part = stored.parts.find((p) => p.id === `m${id}`);
+      if (!part) return undefined;
+      const mesh = part.mesh.clone();
+      const group = new THREE.Group();
+      group.add(mesh);
+      model = { ...stored, root: group, parts: [{ ...part, mesh }] };
+      storedModels.set(id, model);
+    }
+    return model;
+  };
   const matrix = new THREE.Matrix4();
   placements.forEach((placement, index) => {
     const name = placement.component.toLowerCase();
-    const model = models.get(`${name}|${placement.configuration}`) ?? models.get(name);
+    const model = models.get(`${name}|${placement.configuration}`) ?? models.get(name) ?? storedModel(placement.stored);
     if (!model) return;
     const copy = model.root.clone(true);
     // Pair each original mesh with its copy: clone() keeps traversal order.

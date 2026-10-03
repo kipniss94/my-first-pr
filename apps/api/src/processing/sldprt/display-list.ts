@@ -68,6 +68,11 @@ function readFloats(data: Buffer, at: number, count: number): Float32Array {
 
 /** Every face tessellation in one display-list entry. */
 export function decodeDisplayList(data: Buffer): DisplayFace[] {
+  return decodeFaces(data).faces;
+}
+
+/** The faces, and where in the data each one's record lies. */
+export function decodeFaces(data: Buffer): { faces: DisplayFace[]; spans: { at: number; end: number }[] } {
   const faces: DisplayFace[] = [];
   const spans: { at: number; end: number }[] = [];
   let at = 0;
@@ -117,7 +122,7 @@ export function decodeDisplayList(data: Buffer): DisplayFace[] {
   readColours(data, spans).forEach((color, k) => {
     if (color) faces[k].color = color;
   });
-  return faces;
+  return { faces, spans };
 }
 
 /* --------------------------------- colour --------------------------------- */
