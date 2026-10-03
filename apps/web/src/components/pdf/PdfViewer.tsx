@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import { apiUrl } from '@/lib/api';
 import { formatCount } from '@/lib/format';
+import { editedName, originalBytes, saveToDisk } from '@/lib/edit';
+import { applyPdfEdits, type PdfTextEdit } from '@/lib/pdf-edit';
+import { useT } from '@/lib/prefs';
+import { EditorBar } from '@/components/office/DocEditor';
 import { captureWhenDrawn } from '@/lib/thumbnail';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
@@ -25,6 +29,8 @@ interface PdfViewerProps {
   gotoPage?: number | null;
   /** Receives a PNG data URL of page one, for the workspace card. */
   onThumbnail?(dataUrl: string): void;
+  /** Set when the file itself may be edited: its id on the server and name. */
+  editable?: { fileId: string; fileName: string } | null;
 }
 
 export type ZoomMode = 'fit-width' | 'fit-page' | 'custom';
@@ -48,7 +54,15 @@ export function PdfViewer({
   onPageChange,
   gotoPage,
   onThumbnail,
+  editable = null,
 }: PdfViewerProps) {
+  const { t, tp } = useT();
+  const [editing, setEditing] = useState(false);
+  const [deletedPages, setDeletedPages] = useState<Set<number>>(new Set());
+  /** Changed text runs, by "page:index". */
+  const [textEdits, setTextEdits] = useState<Map<string, PdfTextEdit>>(new Map());
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [document_, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
@@ -316,6 +330,31 @@ export function PdfViewer({
 
   if (error) return <ErrorPanel error={{ code: 'pdf_failed', ...error, retryable: false }} />;
 
+  const editCount = textEdits.size + deletedPages.size;
+  const editsByPage = new Map<number, Map<number, PdfTextEdit>>();
+  for (const [key, edit] of textEdits) {
+    const index = Number(key.split(':')[1]);
+    const page = editsByPage.get(edit.page) ?? new Map<number, PdfTextEdit>();
+    page.set(index, edit);
+    editsByPage.set(edit.page, page);
+  }
+  const savePdf = async () => {
+    if (!editable) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const blob = await applyPdfEdits(await originalBytes(editable.fileId), {
+        texts: [...textEdits.values()],
+        deletePages: [...deletedPages],
+      });
+      if (await saveToDisk(blob, editedName(editable.fileName))) setNotice(t('Saved. The original on the server is unchanged.'));
+    } catch (err) {
+      setNotice(t(err instanceof Error ? err.message : "We couldn't save these changes into the document."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const highlightPages = new Map<number, string>();
   if (matches && query.trim().length >= 2) {
     for (const match of matches) highlightPages.set(match.page, query.trim());
@@ -324,6 +363,25 @@ export function PdfViewer({
   return (
     <div ref={rootRef} className="flex min-h-0 flex-1 bg-ink-900">
       <div className="flex min-w-0 flex-1 flex-col">
+        {editing && editable && (
+          <EditorBar
+            title={t('Editing')}
+            fileName={editable.fileName}
+            info={t('Click any text on a page to change it; × on a thumbnail deletes the page.')}
+            changes={editCount}
+            saving={saving}
+            saveLabel={t('Save as PDF…')}
+            notice={notice}
+            onSave={() => void savePdf()}
+            onClose={() => {
+              if (editCount > 0 && !window.confirm(t('Leave without saving? The changes will be lost.'))) return;
+              setEditing(false);
+              setTextEdits(new Map());
+              setDeletedPages(new Set());
+              setNotice(null);
+            }}
+          />
+        )}
         {/* Toolbar */}
         <div className="flex h-12 shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-ink-850 px-2">
           <button
@@ -331,8 +389,8 @@ export function PdfViewer({
             onClick={() => setSidebarOpen((open) => !open)}
             className="btn-icon"
             data-active={sidebarOpen ? 'true' : undefined}
-            title={variant === 'slides' ? 'Slide list' : 'Page thumbnails'}
-            aria-label={variant === 'slides' ? 'Toggle slide list' : 'Toggle page thumbnails'}
+            title={variant === 'slides' ? t('Slide list') : t('Page thumbnails')}
+            aria-label={variant === 'slides' ? t('Slide list') : t('Page thumbnails')}
             data-testid="pdf-sidebar-toggle"
           >
             <svg viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
@@ -349,7 +407,7 @@ export function PdfViewer({
               className="btn-icon"
               onClick={() => scrollToPage(Math.max(1, currentPage - 1))}
               disabled={currentPage <= 1}
-              aria-label="Previous page"
+              aria-label={t('Previous page')}
             >
               <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                 <path d="M10 3.5 6 8l4 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -369,7 +427,7 @@ export function PdfViewer({
                 defaultValue={currentPage}
                 inputMode="numeric"
                 className="w-11 rounded-md border border-line bg-ink-800 px-1.5 py-1 text-center font-mono text-[12px] text-mist-100"
-                aria-label="Page number"
+                aria-label={t('Page number')}
                 data-testid="pdf-page-input"
               />
               <span className="whitespace-nowrap text-[12px] text-mist-500">/ {formatCount(pageCount)}</span>
@@ -379,7 +437,7 @@ export function PdfViewer({
               className="btn-icon"
               onClick={() => scrollToPage(Math.min(pageCount, currentPage + 1))}
               disabled={currentPage >= pageCount}
-              aria-label="Next page"
+              aria-label={t('Next page')}
             >
               <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                 <path d="M6 3.5 10 8l-4 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -397,7 +455,7 @@ export function PdfViewer({
                 setZoomMode('custom');
                 setZoom((current) => previousStep(current * 0.999));
               }}
-              aria-label="Zoom out"
+              aria-label={t('Zoom out')}
             >
               <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                 <path d="M4 8h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -413,7 +471,7 @@ export function PdfViewer({
                 setZoomMode('custom');
                 setZoom((current) => nextStep(current * 1.001));
               }}
-              aria-label="Zoom in"
+              aria-label={t('Zoom in')}
             >
               <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                 <path d="M8 4v8M4 8h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -423,14 +481,20 @@ export function PdfViewer({
 
           <div className="flex shrink-0 items-center rounded-lg border border-line bg-ink-800 p-0.5">
             <ZoomModeButton active={zoomMode === 'fit-width'} onClick={() => setZoomMode('fit-width')}>
-              Fit width
+              {t('Fit width')}
             </ZoomModeButton>
             <ZoomModeButton active={zoomMode === 'fit-page'} onClick={() => setZoomMode('fit-page')}>
-              Fit page
+              {t('Fit page')}
             </ZoomModeButton>
           </div>
 
           {toolbarExtras}
+
+          {editable && variant === 'document' && !editing && (
+            <button type="button" className="btn btn-primary shrink-0" onClick={() => setEditing(true)} title={t('Change text and delete pages, then save to your computer')} data-testid="edit-document">
+              {t('Edit')}
+            </button>
+          )}
 
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <button
@@ -438,8 +502,8 @@ export function PdfViewer({
               className="btn-icon"
               data-active={searchOpen ? 'true' : undefined}
               onClick={() => setSearchOpen((open) => !open)}
-              title="Search the document (Ctrl+F)"
-              aria-label="Search the document"
+              title={t('Search the document (Ctrl+F)')}
+              aria-label={t('Search the document (Ctrl+F)')}
               data-testid="pdf-search-toggle"
             >
               <svg viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -451,8 +515,8 @@ export function PdfViewer({
               type="button"
               className="btn-icon"
               onClick={() => window.open(apiUrl(source), '_blank', 'noopener')}
-              title="Print"
-              aria-label="Print"
+              title={t('Print')}
+              aria-label={t('Print')}
             >
               <svg viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
                 <path d="M4.5 6V2.5h7V6M4.5 12H3.5A1 1 0 0 1 2.5 11V7.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1V11a1 1 0 0 1-1 1h-1" />
@@ -464,8 +528,8 @@ export function PdfViewer({
               className="btn-icon"
               onClick={toggleFullscreen}
               data-active={fullscreen ? 'true' : undefined}
-              title="Fullscreen"
-              aria-label="Toggle fullscreen"
+              title={t('Fullscreen')}
+              aria-label={t('Fullscreen')}
             >
               <svg viewBox="0 0 16 16" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
                 <path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10" strokeLinecap="round" strokeLinejoin="round" />
@@ -488,33 +552,33 @@ export function PdfViewer({
                 autoFocus
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Find in document"
+                placeholder={t('Find in document')}
                 className="min-w-0 flex-1 rounded-md border border-line bg-ink-850 px-2.5 py-1.5 text-[13px] text-mist-100 placeholder:text-mist-500"
-                aria-label="Find in document"
+                aria-label={t('Find in document')}
                 data-testid="pdf-search-input"
               />
               <button type="submit" className="btn btn-subtle" disabled={searching}>
-                {searching ? 'Searching…' : 'Find'}
+                {searching ? t('Searching…') : t('Find')}
               </button>
             </form>
             {matches && (
               <div className="flex shrink-0 items-center gap-1.5" data-testid="pdf-search-results">
                 <span className="whitespace-nowrap font-mono text-[12px] text-mist-400">
-                  {matches.length === 0 ? 'No matches' : `${activeMatch + 1} / ${matches.length}`}
+                  {matches.length === 0 ? t('No matches') : `${activeMatch + 1} / ${matches.length}`}
                 </span>
-                <button type="button" className="btn-icon" onClick={() => stepMatch(-1)} disabled={matches.length === 0} aria-label="Previous match">
+                <button type="button" className="btn-icon" onClick={() => stepMatch(-1)} disabled={matches.length === 0} aria-label={t('Previous match')}>
                   <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                     <path d="M3.5 10 8 6l4.5 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
-                <button type="button" className="btn-icon" onClick={() => stepMatch(1)} disabled={matches.length === 0} aria-label="Next match">
+                <button type="button" className="btn-icon" onClick={() => stepMatch(1)} disabled={matches.length === 0} aria-label={t('Next match')}>
                   <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                     <path d="M3.5 6 8 10l4.5-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </button>
               </div>
             )}
-            <button type="button" className="btn-icon shrink-0" onClick={() => setSearchOpen(false)} aria-label="Close search">
+            <button type="button" className="btn-icon shrink-0" onClick={() => setSearchOpen(false)} aria-label={t('Close search')}>
               <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                 <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
@@ -530,6 +594,15 @@ export function PdfViewer({
                 pageCount={pageCount}
                 currentPage={currentPage}
                 onSelect={scrollToPage}
+                deletedPages={editing ? deletedPages : null}
+                onToggleDelete={(page) =>
+                  setDeletedPages((current) => {
+                    const next = new Set(current);
+                    if (next.has(page)) next.delete(page);
+                    else if (next.size < pageCount - 1) next.add(page);
+                    return next;
+                  })
+                }
               />
             ))}
 
@@ -544,11 +617,23 @@ export function PdfViewer({
                     scale={scale}
                     highlight={highlightPages.get(index + 1) ?? null}
                     fallbackSize={firstPageSize}
+                    editing={editing}
+                    deleted={editing && deletedPages.has(index + 1)}
+                    edits={editsByPage.get(index + 1)}
+                    onEditText={(runIndex, edit) =>
+                      setTextEdits((current) => {
+                        const next = new Map(current);
+                        const key = `${index + 1}:${runIndex}`;
+                        if (edit) next.set(key, edit);
+                        else next.delete(key);
+                        return next;
+                      })
+                    }
                   />
                 ))}
               </div>
             ) : (
-              <div className="grid h-full place-items-center text-sm text-mist-400">Loading {fileName}…</div>
+              <div className="grid h-full place-items-center text-sm text-mist-400">{t('Loading {name}…', { name: fileName })}</div>
             )}
           </div>
         </div>

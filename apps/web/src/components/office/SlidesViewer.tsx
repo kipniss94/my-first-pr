@@ -7,10 +7,14 @@ import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { NativeSlides } from './NativeSlides';
+import { SlidesEditor } from './SlidesEditor';
+import { useT } from '@/lib/prefs';
 
 interface SlidesViewerProps {
   source: string;
   meta: Record<string, unknown>;
+  fileId: string | null;
+  fileName: string;
   onProgress(percent: number): void;
   onReady(): void;
 }
@@ -30,7 +34,11 @@ interface OutlineEntry {
  * renderer draws the slides from the file itself — less faithful, and labelled
  * as such.
  */
-export function SlidesViewer({ source, meta, onProgress, onReady }: SlidesViewerProps) {
+export function SlidesViewer({ source, meta, fileId, fileName, onProgress, onReady }: SlidesViewerProps) {
+  const { t } = useT();
+  const [editing, setEditing] = useState(false);
+  const formatId = typeof meta.formatId === 'string' ? meta.formatId : '';
+  const editable = Boolean(fileId) && formatId === 'pptx';
   const mode = meta.mode === 'native' ? 'native' : 'rendered';
   const outline = Array.isArray(meta.outline) ? (meta.outline as OutlineEntry[]) : [];
 
@@ -70,12 +78,15 @@ export function SlidesViewer({ source, meta, onProgress, onReady }: SlidesViewer
   const notes = outline.find((entry) => entry.index === currentPage)?.notes ?? null;
 
   if (error) return <ErrorPanel error={{ code: 'slides_failed', ...error, retryable: false }} />;
+  if (editing && fileId) return <SlidesEditor fileId={fileId} fileName={fileName} onClose={() => setEditing(false)} />;
 
   const rail = (
     <SlideRail
       outline={outline}
       slideCount={typeof meta.slideCount === 'number' ? meta.slideCount : outline.length}
       currentPage={currentPage}
+      onEdit={fileId ? () => setEditing(true) : null}
+      editable={editable}
       onSelect={(page) => {
         setGotoPage(page);
         setCurrentPage(page);
@@ -87,7 +98,7 @@ export function SlidesViewer({ source, meta, onProgress, onReady }: SlidesViewer
 
   if (mode === 'native') {
     if (!document) {
-      return <div className="grid min-h-0 flex-1 place-items-center text-sm text-mist-400">Loading slides…</div>;
+      return <div className="grid min-h-0 flex-1 place-items-center text-sm text-mist-400">{t('Loading slides…')}</div>;
     }
     return (
       <div className="flex min-h-0 flex-1">
@@ -124,16 +135,16 @@ export function SlidesViewer({ source, meta, onProgress, onReady }: SlidesViewer
               className="btn btn-ghost shrink-0"
               data-testid="slides-notes-toggle"
             >
-              Notes
+              {t('Notes')}
             </button>
           ) : null
         }
       />
       {notesOpen && (
         <div className="max-h-40 shrink-0 overflow-auto border-t border-line bg-ink-850 px-4 py-3">
-          <h2 className="field-label">Speaker notes · slide {currentPage}</h2>
+          <h2 className="field-label">{t('Speaker notes · slide {n}', { n: currentPage })}</h2>
           <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-mist-300">
-            {notes ?? 'No notes on this slide.'}
+            {notes ?? t('No notes on this slide.')}
           </p>
         </div>
       )}
@@ -146,16 +157,35 @@ function SlideRail({
   slideCount,
   currentPage,
   onSelect,
+  onEdit,
+  editable,
 }: {
   outline: OutlineEntry[];
   slideCount: number;
   currentPage: number;
   onSelect(page: number): void;
+  onEdit: (() => void) | null;
+  editable: boolean;
 }) {
+  const { t } = useT();
   const count = Math.max(slideCount, outline.length, 1);
   return (
     <aside className="hidden w-52 shrink-0 flex-col border-r border-line bg-ink-850 md:flex">
-      <h2 className="border-b border-line px-3 py-2.5 field-label">Slides</h2>
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
+        <h2 className="field-label">{t('Slides')}</h2>
+        {onEdit && (
+          <button
+            type="button"
+            className="btn btn-primary !px-2 !py-1 text-[12px]"
+            onClick={onEdit}
+            disabled={!editable}
+            title={editable ? t('Edit the text and delete slides, then save to your computer') : t('Editing works on .docx, .xlsx and .pptx; save older formats in those first.')}
+            data-testid="edit-document"
+          >
+            {t('Edit')}
+          </button>
+        )}
+      </div>
       <ol className="min-h-0 flex-1 overflow-auto py-1" data-testid="slide-rail">
         {Array.from({ length: count }, (_, index) => {
           const number = index + 1;
@@ -182,10 +212,10 @@ function SlideRail({
                   {entry?.title ? (
                     <span className="line-clamp-2">{entry.title}</span>
                   ) : (
-                    <span className="text-mist-500">Slide {number}</span>
+                    <span className="text-mist-500">{t('Slide {n}', { n: number })}</span>
                   )}
                   {entry?.notes && (
-                    <span className="mt-0.5 block text-[10px] uppercase tracking-wider text-mist-500">notes</span>
+                    <span className="mt-0.5 block text-[10px] uppercase tracking-wider text-mist-500">{t('notes')}</span>
                   )}
                 </span>
               </button>

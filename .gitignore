@@ -27,6 +27,7 @@ docs/sldprt/reports/
 
 # Copied from node_modules by the predev/prebuild step, never edited by hand.
 apps/web/public/pdf.worker.min.mjs
+apps/web/public/fonts/
 
 # Playwright output
 test-results/

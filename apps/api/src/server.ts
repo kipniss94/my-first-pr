@@ -50,7 +50,12 @@ export function createServer() {
     }),
   );
 
-  app.use(express.json({ limit: '64kb' }));
+  // Small bodies everywhere, except a document's edits: every changed paragraph or cell travels in one.
+  const smallJson = express.json({ limit: '64kb' });
+  const editsJson = express.json({ limit: '16mb' });
+  app.use((req: Request, res: Response, next: NextFunction) =>
+    (/\/files\/[^/]+\/edited$/.test(req.path) ? editsJson : smallJson)(req, res, next),
+  );
 
   app.get('/healthz', (_req: Request, res: Response) => {
     res.json({

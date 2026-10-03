@@ -6,11 +6,15 @@ import { formatCount } from '@/lib/format';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { PageLayoutToggle } from './PageLayoutToggle';
+import { DocEditor } from './DocEditor';
+import { TextEditor } from './TextEditor';
+import { useT } from '@/lib/prefs';
 
 interface WordViewerProps {
   source: string;
   meta: Record<string, unknown>;
   fileId: string | null;
+  fileName: string;
   onReady(): void;
 }
 
@@ -22,7 +26,11 @@ const WIDTHS = {
 
 type WidthKey = keyof typeof WIDTHS;
 
-export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
+const WIDTH_LABEL: Record<WidthKey, string> = { comfortable: 'Comfortable', wide: 'Wide', full: 'Full width' };
+
+export function WordViewer({ source, meta, fileId, fileName, onReady }: WordViewerProps) {
+  const { t } = useT();
+  const [editing, setEditing] = useState(false);
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
   const [width, setWidth] = useState<WidthKey>('comfortable');
@@ -63,6 +71,12 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
 
   if (error) return <ErrorPanel error={{ code: 'word_failed', ...error, retryable: false }} />;
 
+  const formatId = typeof meta.formatId === 'string' ? meta.formatId : '';
+  // Word files are edited in their own XML; text files as they are.
+  const editor = formatId === 'docx' ? 'docx' : formatId === 'txt' ? 'text' : null;
+  if (editing && fileId && editor === 'docx') return <DocEditor fileId={fileId} fileName={fileName} onClose={() => setEditing(false)} />;
+  if (editing && fileId && editor === 'text') return <TextEditor fileId={fileId} fileName={fileName} onClose={() => setEditing(false)} />;
+
   if (showPageLayout && pdfRendition && fileId) {
     return <PageLayoutToggle source={pdfRendition} label="document" onBack={() => setShowPageLayout(false)} />;
   }
@@ -73,12 +87,24 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
         <div className="flex h-11 shrink-0 items-center gap-3 overflow-x-auto border-b border-line bg-ink-850 px-3">
           {words !== null && (
             <span className="shrink-0 whitespace-nowrap text-[12px] text-mist-400">
-              {formatCount(words)} words
-              {images ? ` · ${formatCount(images)} image${images === 1 ? '' : 's'}` : ''}
+              {t('Words: {count}', { count: formatCount(words) })}
+              {images ? ` · ${t('pictures: {count}', { count: formatCount(images) })}` : ''}
             </span>
           )}
 
           <div className="ml-auto flex shrink-0 items-center gap-2">
+            {fileId && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                disabled={!editor}
+                title={editor ? t('Edit the text and delete pages, then save to your computer') : t('Editing works on .docx, .xlsx and .pptx; save older formats in those first.')}
+                className="btn btn-primary"
+                data-testid="edit-document"
+              >
+                {t('Edit')}
+              </button>
+            )}
             <div className="flex items-center rounded-lg border border-line bg-ink-800 p-0.5">
               {(Object.keys(WIDTHS) as WidthKey[]).map((key) => (
                 <button
@@ -90,7 +116,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
                     width === key ? 'bg-ink-600 text-mist-100' : 'text-mist-400 hover:text-mist-200'
                   }`}
                 >
-                  {key}
+                  {t(WIDTH_LABEL[key])}
                 </button>
               ))}
             </div>
@@ -99,7 +125,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
                 type="button"
                 className="btn-icon"
                 onClick={() => setFontScale((value) => Math.max(0.8, value - 0.1))}
-                aria-label="Smaller text"
+                aria-label={t('Smaller text')}
               >
                 <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                   <path d="M4 8h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -109,7 +135,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
                 type="button"
                 className="btn-icon"
                 onClick={() => setFontScale((value) => Math.min(1.8, value + 0.1))}
-                aria-label="Larger text"
+                aria-label={t('Larger text')}
               >
                 <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true">
                   <path d="M8 4v8M4 8h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
@@ -123,7 +149,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
                 className="btn btn-ghost"
                 data-testid="word-page-layout"
               >
-                Page layout
+                {t('Page layout')}
               </button>
             )}
           </div>
@@ -138,7 +164,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
             </div>
           ) : isEmpty ? (
             <p className="mx-auto max-w-[42rem] px-6 text-center text-sm text-paper-muted">
-              This document appears to be empty.
+              {t('This document appears to be empty.')}
             </p>
           ) : (
             <article

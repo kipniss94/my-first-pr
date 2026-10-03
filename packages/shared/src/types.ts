@@ -442,3 +442,54 @@ export interface NativeCadDocument {
    */
   geometry3d?: string | null;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Editing Office documents                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What of a Word, Excel or PowerPoint file can be edited, read from the file
+ * itself. Edits go back as `DocumentEdits` and are written into the original
+ * XML, so everything not edited — styles, pictures, layout — stays as it was.
+ */
+export type EditableDocument = DocxEditable | XlsxEditable | PptxEditable;
+
+export interface EditableParagraph {
+  /** Position among all the document's paragraphs, in document order. */
+  id: number;
+  text: string;
+  style: 'title' | 'heading1' | 'heading2' | 'heading3' | 'list' | 'body';
+}
+
+export type DocxBlock =
+  | { type: 'paragraph'; block: number; page: number; paragraph: EditableParagraph; locked: boolean }
+  | { type: 'table'; block: number; page: number; rows: EditableParagraph[][][] }
+  | { type: 'group'; block: number; page: number; paragraphs: EditableParagraph[] };
+
+export interface DocxEditable {
+  kind: 'docx';
+  blocks: DocxBlock[];
+  pages: number;
+  /** Where the page numbers come from: Word's own last layout, or explicit breaks only. */
+  pagesFrom: 'layout' | 'breaks' | 'none';
+}
+
+export interface XlsxEditable {
+  kind: 'xlsx';
+  sheets: string[];
+}
+
+export interface PptxEditable {
+  kind: 'pptx';
+  slides: {
+    index: number;
+    title: string | null;
+    shapes: { id: string; name: string; paragraphs: string[] }[];
+  }[];
+}
+
+export interface DocumentEdits {
+  docx?: { paragraphs?: { id: number; text: string }[]; deleteBlocks?: number[] };
+  xlsx?: { cells?: { sheet: string; ref: string; value: string }[]; deleteSheets?: string[] };
+  pptx?: { texts?: { slide: number; shape: string; paragraph: number; text: string }[]; deleteSlides?: number[] };
+}

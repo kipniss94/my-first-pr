@@ -4,6 +4,8 @@ import path from 'node:path';
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
+import { applyEdits, EditError, editableKind, readEditable } from '../processing/ooxml-edit.js';
 import { ACCEPTED_EXTENSIONS, FORMATS, formatById, type CapabilitiesResponse } from '@docuview/shared';
 import { config, tmpDir } from '../config.js';
 import { logger } from '../logger.js';
@@ -312,6 +314,110 @@ api.get('/files/:fileId/rendition/pdf', async (req: Request, res: Response) => {
     'Content-Disposition': 'inline',
   });
   streamFile(target, res);
+});
+
+/* ------------------------------- editing --------------------------------- */
+
+const paragraphEdit = z.object({ id: z.number().int().nonnegative(), text: z.string().max(200_000) });
+const editsSchema = z.object({
+  docx: z
+    .object({ paragraphs: z.array(paragraphEdit).max(100_000).optional(), deleteBlocks: z.array(z.number().int().nonnegative()).max(100_000).optional() })
+    .optional(),
+  xlsx: z
+    .object({
+      cells: z.array(z.object({ sheet: z.string().max(300), ref: z.string().max(12), value: z.string().max(32_767) })).max(500_000).optional(),
+      deleteSheets: z.array(z.string().max(300)).max(1000).optional(),
+    })
+    .optional(),
+  pptx: z
+    .object({
+      texts: z
+        .array(z.object({ slide: z.number().int().nonnegative(), shape: z.string().max(40), paragraph: z.number().int().nonnegative(), text: z.string().max(100_000) }))
+        .max(100_000)
+        .optional(),
+      deleteSlides: z.array(z.number().int().nonnegative()).max(10_000).optional(),
+    })
+    .optional(),
+});
+
+const OFFICE_TYPES: Record<string, string> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+};
+
+function notEditable(res: Response, extension: string): void {
+  res.status(415).json({
+    error: {
+      code: 'not_editable',
+      message: `“.${extension}” files cannot be edited here.`,
+      hint: 'Editing works on .docx, .xlsx and .pptx; save older formats in those first.',
+      retryable: false,
+    },
+  });
+}
+
+/** What of a Word, Excel or PowerPoint file can be edited. */
+api.get('/files/:fileId/editable', async (req: Request, res: Response) => {
+  const meta = await requireMeta(req, res);
+  if (!meta) return;
+  const kind = editableKind(meta.extension);
+  if (!kind) {
+    notEditable(res, meta.extension);
+    return;
+  }
+  try {
+    const document = readEditable(await fs.readFile(originalPath(meta.fileId)), kind);
+    res.set('Cache-Control', 'no-store');
+    res.json(document);
+  } catch (err) {
+    logger.warn({ err, fileId: meta.fileId }, 'editable model failed');
+    res.status(422).json({
+      error: {
+        code: 'edit_unreadable',
+        message: err instanceof EditError ? err.message : "We couldn't read this document for editing.",
+        retryable: false,
+      },
+    });
+  }
+});
+
+/** The original with the edits written in, as a download. */
+api.post('/files/:fileId/edited', async (req: Request, res: Response) => {
+  const meta = await requireMeta(req, res);
+  if (!meta) return;
+  const kind = editableKind(meta.extension);
+  if (!kind) {
+    notEditable(res, meta.extension);
+    return;
+  }
+  const parsed = editsSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { code: 'bad_edits', message: 'These changes could not be read.', retryable: false } });
+    return;
+  }
+  try {
+    const output = applyEdits(await fs.readFile(originalPath(meta.fileId)), kind, parsed.data);
+    const name = meta.displayName;
+    res.set({
+      'Content-Type': OFFICE_TYPES[kind],
+      'Content-Length': String(output.length),
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'no-store',
+      'Content-Disposition': `attachment; filename="${asciiFileName(name)}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    });
+    res.send(output);
+    logger.info({ fileId: meta.fileId, kind }, 'edited copy written');
+  } catch (err) {
+    logger.warn({ err, fileId: meta.fileId }, 'applying edits failed');
+    res.status(422).json({
+      error: {
+        code: 'edit_failed',
+        message: err instanceof EditError ? err.message : "We couldn't save these changes into the document.",
+        retryable: false,
+      },
+    });
+  }
 });
 
 api.delete('/files/:fileId', async (req: Request, res: Response) => {

@@ -190,16 +190,24 @@ export function ViewerShell({ session }: { session: Session }) {
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}
+              editable={session.fileId ? { fileId: session.fileId, fileName: session.fileName } : null}
             />
           )}
           {result.viewer === 'office-word' && (
-            <WordViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
+            <WordViewer source={result.source} meta={result.meta} fileId={session.fileId} fileName={session.fileName} onReady={onViewerReady} />
           )}
           {result.viewer === 'office-sheet' && (
-            <SheetViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
+            <SheetViewer source={result.source} meta={result.meta} fileId={session.fileId} fileName={session.fileName} onReady={onViewerReady} />
           )}
           {result.viewer === 'office-slides' && (
-            <SlidesViewer source={result.source} meta={result.meta} onProgress={onViewerLoading} onReady={onViewerReady} />
+            <SlidesViewer
+              source={result.source}
+              meta={result.meta}
+              fileId={session.fileId}
+              fileName={session.fileName}
+              onProgress={onViewerLoading}
+              onReady={onViewerReady}
+            />
           )}
           {result.viewer === 'image' && (
             <ImageViewer source={result.source} onReady={onViewerReady} onThumbnail={onThumbnail} />
