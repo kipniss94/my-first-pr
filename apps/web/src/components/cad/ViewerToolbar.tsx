@@ -3,6 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { DisplayMode, StandardView, ToolMode } from '@/lib/cad/types';
 import { useT } from '@/lib/prefs';
+import { MeasureHelp } from './MeasureHelp';
 
 interface ViewerToolbarProps {
   tool: ToolMode;
@@ -97,7 +98,18 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <path d="M5 3.5 15 9.5l-4.3 1.1L9.6 15 5 3.5Z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
         </IconButton>
         <IconButton
-          label="Measure distance"
+          label={t('Dimension: faces, edges, vertices (M)')}
+          active={props.tool === 'measure'}
+          onClick={() => props.onToolChange('measure')}
+          testId="tool-measure"
+        >
+          <path d="M2.5 11.5h11M2.5 9.5v4M13.5 9.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          <circle cx="8" cy="5" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M6.2 6.8 9.8 3.2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+        </IconButton>
+        <MeasureHelp />
+        <IconButton
+          label={t('Distance between two free points')}
           active={props.tool === 'measure-distance'}
           onClick={() => props.onToolChange('measure-distance')}
           testId="tool-distance"
@@ -107,15 +119,7 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
           <circle cx="12.5" cy="3.5" r="1.8" fill="none" stroke="currentColor" strokeWidth="1.4" />
         </IconButton>
         <IconButton
-          label="Measure edge length"
-          active={props.tool === 'measure-length'}
-          onClick={() => props.onToolChange('measure-length')}
-          testId="tool-length"
-        >
-          <path d="M2.5 10.5h11M4.5 8.5v4M8 8.5v4M11.5 8.5v4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        </IconButton>
-        <IconButton
-          label="Measure angle"
+          label={t('Angle by three points')}
           active={props.tool === 'measure-angle'}
           onClick={() => props.onToolChange('measure-angle')}
           testId="tool-angle"

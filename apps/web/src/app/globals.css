@@ -223,7 +223,8 @@ body {
     background: var(--color-ink-700);
     color: var(--color-mist-100);
   }
-  .btn-icon[data-active='true'] {
+  .btn-icon[data-active='true'],
+  .btn-icon[data-active='true']:hover:not(:disabled) {
     background: var(--color-accent-soft);
     color: var(--color-accent-bright);
   }
@@ -410,6 +411,22 @@ body {
   pointer-events: none;
   transform: translate(-50%, -140%);
   backdrop-filter: blur(2px);
+}
+
+/* The dimension being chosen: it takes the wheel, so it can switch variants. */
+.cad-label-live {
+  pointer-events: auto;
+  cursor: ns-resize;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-color: var(--color-measure);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.25);
+}
+.cad-label-count {
+  margin-left: 4px;
+  font-weight: 400;
+  opacity: 0.7;
 }
 
 /*

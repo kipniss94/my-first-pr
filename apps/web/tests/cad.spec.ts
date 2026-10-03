@@ -134,6 +134,34 @@ test.describe('CAD viewer', () => {
     await expect(list).toContainText('ΔX');
   });
 
+  test('the dimension tool names faces and switches between their dimensions', async ({ page }) => {
+    await openFixture(page, 'cube.step');
+    await waitForRenderedCanvas(page);
+
+    await page.getByTestId('tool-measure').click();
+    const canvas = page.locator('[data-testid="cad-canvas"] canvas').first();
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('no canvas');
+
+    // One face of the 40 mm cube: its area first, the perimeter one Space later.
+    await page.mouse.click(box.x + box.width * 0.42, box.y + box.height * 0.42);
+    const live = page.getByTestId('live-measure');
+    await expect(live.getByTestId('live-measure-picked')).toHaveText(/Plane/);
+    await expect(page.getByTestId('live-measure-current')).toContainText('Face area');
+    await expect(page.getByTestId('live-measure-current')).toContainText('1600.00 mm²');
+    await page.keyboard.press('Space');
+    await expect(page.getByTestId('live-measure-current')).toContainText('160.00 mm');
+
+    // A second face: the angle between them.
+    await page.mouse.click(box.x + box.width * 0.58, box.y + box.height * 0.58);
+    await expect(live.getByTestId('live-measure-picked')).toHaveCount(2);
+    await expect(page.getByTestId('live-measure-current')).toContainText('90.00°');
+
+    await page.keyboard.press('Enter');
+    await page.getByRole('button', { name: 'Analysis' }).click();
+    await expect(page.getByTestId('measurement-list')).toContainText('90.00°');
+  });
+
   test('the section plane cuts the model and can be moved', async ({ page }) => {
     await openFixture(page, 'hollow-block.step');
     await waitForRenderedCanvas(page);

@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { computeSurfaceArea, computeVolume } from '@/lib/cad/geometry';
 import type { AssemblyPlacement } from '@docuview/shared';
 import { loadMeshFile, loadNmg, mergeModels, placeModels, type MergeSource } from '@/lib/cad/loaders';
-import { CadScene, disposeObject, type SelectionInfo } from '@/lib/cad/scene';
+import { CadScene, disposeObject, type LiveMeasure, type SelectionInfo } from '@/lib/cad/scene';
 import type { RenderableComponent } from '@/lib/assembly';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
 import { formatLength } from '@/lib/format';
@@ -25,6 +25,7 @@ import { AnalysisPanel } from './AnalysisPanel';
 import { ModelTree } from './ModelTree';
 import { PropertiesPanel } from './PropertiesPanel';
 import { ViewerToolbar } from './ViewerToolbar';
+import { LiveMeasurePanel } from './LiveMeasurePanel';
 
 interface CadViewerProps {
   /** Primary geometry. Null for an assembly that only has components so far. */
@@ -87,6 +88,7 @@ export function CadViewer({
   const [selection, setSelection] = useState<SelectionInfo>({ partId: null, faceIndex: null, faceCount: null });
   const [measurements, setMeasurements] = useState<MeasurementRecord[]>([]);
   const [pendingPoints, setPendingPoints] = useState(0);
+  const [live, setLive] = useState<LiveMeasure | null>(null);
   const [fps, setFps] = useState<number | null>(null);
   const [hiddenVersion, setHiddenVersion] = useState(0);
 
@@ -116,6 +118,7 @@ export function CadViewer({
         onSelectionChange: setSelection,
         onMeasurementsChange: setMeasurements,
         onPendingPointsChange: setPendingPoints,
+        onLiveMeasureChange: setLive,
         onFps: setFps,
       });
     } catch {
@@ -293,6 +296,12 @@ export function CadViewer({
 
   useEffect(() => {
     sceneRef.current?.setTool(tool);
+    if (tool !== 'measure') setLive(null);
+    else {
+      setLive((current) => current ?? { selection: [], options: [], index: 0 });
+      // A focused toolbar button would take Space for itself.
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
   }, [tool]);
 
   useEffect(() => {
@@ -432,6 +441,24 @@ export function CadViewer({
 
       const scene = sceneRef.current;
       if (!scene) return;
+      // The dimension tool: Space switches the variant, Enter keeps it, Esc clears.
+      if (scene.activeTool === 'measure') {
+        if (event.key === ' ') {
+          event.preventDefault();
+          scene.cycleMeasure(event.shiftKey ? -1 : 1);
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          scene.commitMeasure();
+          scene.clearPicked();
+          return;
+        }
+        if (event.key === 'Escape' && scene.hasPicked) {
+          scene.clearPicked();
+          return;
+        }
+      }
       const views: Record<string, StandardView> = { '1': 'front', '2': 'back', '3': 'left', '4': 'right', '5': 'top', '6': 'bottom', '7': 'iso' };
       if (views[event.key]) {
         scene.setStandardView(views[event.key]);
@@ -452,7 +479,7 @@ export function CadViewer({
           setDisplayMode((current) => (current === 'shaded-edges' ? 'shaded' : 'shaded-edges'));
           break;
         case 'm':
-          setTool('measure-distance');
+          setTool('measure');
           break;
         case 'x':
           setSection((current) => ({ ...current, enabled: !current.enabled }));
@@ -505,12 +532,25 @@ export function CadViewer({
           <div className="relative min-w-0 flex-1 bg-[var(--viewport-bg)]">
             <div ref={containerRef} className="absolute inset-0" data-testid="cad-canvas" />
             {!model && !loadError && <LoadingOverlay percent={percent} />}
-            {model && tool !== 'select' && (
+            {model && (tool === 'measure-distance' || tool === 'measure-angle') && (
               <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-lg border border-measure/40 bg-ink-900/90 px-3 py-1.5 text-[12px] text-measure backdrop-blur">
-                {tool === 'measure-distance' && `Click two points · ${pendingPoints}/2`}
-                {tool === 'measure-angle' && `Click three points · ${pendingPoints}/3`}
-                {tool === 'measure-length' && 'Click a model edge'}
+                {tool === 'measure-distance'
+                  ? t('Click two points · {n}/2', { n: pendingPoints })
+                  : t('Click three points, the corner second · {n}/3', { n: pendingPoints })}
               </div>
+            )}
+            {model && tool === 'measure' && live && (
+              <LiveMeasurePanel
+                live={live}
+                units={model.units}
+                onCycle={(step) => sceneRef.current?.cycleMeasure(step)}
+                onChoose={(index) => sceneRef.current?.chooseMeasure(index)}
+                onKeep={() => {
+                  sceneRef.current?.commitMeasure();
+                  sceneRef.current?.clearPicked();
+                }}
+                onClear={() => sceneRef.current?.clearPicked()}
+              />
             )}
             {model && section.enabled && (
               <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-line bg-ink-900/90 px-2.5 py-1.5 font-mono text-[11px] text-mist-300 backdrop-blur">
