@@ -362,7 +362,272 @@ interface ViewRecord {
   buckets: number[];
   /** A detail view's boundary on the sheet, when it is a circle. */
   circle?: { center: Point; radius: number };
+  /** A broken view: the pieces kept, along one sheet axis, and how far each moves. */
+  breaks?: BrokenLayout;
 }
+
+/* ------------------------------ broken views ------------------------------ */
+
+/** One break: the band cut out of a view, in sheet units from the view's origin. */
+export interface BreakBand {
+  /** 0: the band runs across x (vertical break lines); 1: across y. */
+  axis: 0 | 1;
+  lo: number;
+  hi: number;
+  /** How far the break lines reach across the view: its width. */
+  across: [number, number];
+}
+
+export interface BrokenLayout {
+  axis: 0 | 1;
+  /** From the first piece to the last; the first starts, the last ends, unbounded. */
+  pieces: { lo: number; hi: number; shift: number }[];
+}
+
+/** A broken view's own record: the gap between its pieces and how far each moved. */
+export interface BreakRecord {
+  gap: number;
+  /** The view's unbroken extent on the sheet, [x0, y0, x1, y1]. */
+  box: number[];
+  axis: 0 | 1 | null;
+  shifts: number[];
+}
+
+/**
+ * Break lines, from `Contents/Definition`. Each is an object named like its
+ * first one ("Break Line1", "Линия разрыва1"…), and 215 bytes after its name
+ * come the ends of its two lines as four points (x, y, 0): the band the view
+ * loses, in sheet units from the view's origin, and how wide the view is
+ * where it is cut. The view's own edges stay whole; the sheet shows the
+ * pieces closed up, a small gap between each.
+ *
+ * A broken view's own record says how: FF FF FF FF, the gap, the size of a
+ * zigzag; 12 bytes before the gap, the break-line style; 60 bytes before, the
+ * view's unbroken extent; and ending 116 bytes before, a count and that many
+ * (dx, dy, 0), one per piece. Some broken views have none.
+ */
+export function readBreaks(def: Buffer): { bands: BreakBand[]; records: BreakRecord[] } {
+  const cls = def.indexOf(Buffer.from('moBreakLine_c', 'latin1'));
+  if (cls < 0) return { bands: [], records: [] };
+  const firstName = cstring(def, def.indexOf(Buffer.from([0xff, 0xfe, 0xff]), cls + 13));
+  const base = firstName?.text.replace(/\d+$/, '') ?? '';
+  if (!base) return { bands: [], records: [] };
+  const needle = Buffer.from(base, 'utf16le');
+  const bands: BreakBand[] = [];
+  const seen = new Set<string>();
+  for (let p = def.indexOf(needle); p >= 0; p = def.indexOf(needle, p + 1)) {
+    if (p < 4 || def[p - 4] !== 0xff || def[p - 3] !== 0xfe || def[p - 2] !== 0xff) continue;
+    const at = p + def[p - 1] * 2 + 215;
+    if (at + 96 > def.length) continue;
+    const [a, b, c, e] = [0, 1, 2, 3].map((k) => [0, 1, 2].map((j) => def.readDoubleLE(at + k * 24 + j * 8)));
+    if (![a, b, c, e].flat().every((v) => Number.isFinite(v) && Math.abs(v) < 20) || a[2] !== 0 || c[2] !== 0) continue;
+    const same = (u: number, v: number) => near(u, v, 1e-9);
+    let band: BreakBand | null = null;
+    if (same(a[1], b[1]) && same(c[1], e[1]) && same(a[0], c[0]) && same(b[0], e[0]) && !same(a[1], c[1]) && !same(a[0], b[0])) {
+      band = { axis: 1, lo: Math.min(a[1], c[1]), hi: Math.max(a[1], c[1]), across: [Math.min(a[0], b[0]), Math.max(a[0], b[0])] };
+    } else if (same(a[0], b[0]) && same(c[0], e[0]) && same(a[1], c[1]) && same(b[1], e[1]) && !same(a[0], c[0]) && !same(a[1], b[1])) {
+      band = { axis: 0, lo: Math.min(a[0], c[0]), hi: Math.max(a[0], c[0]), across: [Math.min(a[1], b[1]), Math.max(a[1], b[1])] };
+    }
+    if (!band) continue;
+    const key = [band.axis, band.lo, band.hi, ...band.across].map((v) => v.toFixed(7)).join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    bands.push(band);
+  }
+
+  const records: BreakRecord[] = [];
+  const mark = Buffer.from([0xff, 0xff, 0xff, 0xff]);
+  for (let m = def.indexOf(mark); m >= 0; m = def.indexOf(mark, m + 1)) {
+    const at = m + 4;
+    if (at < 400 || at + 16 > def.length) continue;
+    const gap = def.readDoubleLE(at);
+    const size = def.readDoubleLE(at + 8);
+    if (!(gap >= 1e-4 && gap < 0.1) || !(size > 1e-5 && size < 0.05) || def.readUInt32LE(at - 12) > 16) continue;
+    const box = [0, 1, 2, 3].map((k) => def.readDoubleLE(at - 60 + k * 8));
+    if (!box.every(finite) || !(box[0] < box[2] && box[1] < box[3])) continue;
+    const end = at - 116;
+    let count = 0;
+    for (let n = 2; n <= 64 && end - n * 24 - 4 >= 0; n += 1) {
+      if (def.readUInt32LE(end - n * 24 - 4) === n) {
+        count = n;
+        break;
+      }
+    }
+    if (!count) continue;
+    const moves = Array.from({ length: count }, (_, k) => [0, 1, 2].map((j) => def.readDoubleLE(end - (count - k) * 24 + j * 8)));
+    if (!moves.flat().every(finite) || moves.some((v) => v[2] !== 0)) continue;
+    const xs = moves.some((v) => v[0] !== 0);
+    const ys = moves.some((v) => v[1] !== 0);
+    if (xs && ys) continue;
+    const axis = xs ? 0 : ys ? 1 : null;
+    records.push({ gap, box, axis, shifts: moves.map((v) => v[axis ?? 0]) });
+  }
+  return { bands, records };
+}
+
+/**
+ * The pieces of a view between its breaks, as SolidWorks closes them up: each
+ * band cut out but for the gap, the first piece moved on by half of all that
+ * is taken out and the last back by as much, so the view keeps its middle.
+ * Null when the bands are no wider than the gaps.
+ */
+export function breakLayout(bands: BreakBand[], gap: number): BrokenLayout['pieces'] | null {
+  const merged: { lo: number; hi: number }[] = [];
+  for (const band of [...bands].sort((x, y) => x.lo - y.lo)) {
+    const last = merged[merged.length - 1];
+    if (last && band.lo <= last.hi) last.hi = Math.max(last.hi, band.hi);
+    else merged.push({ lo: band.lo, hi: band.hi });
+  }
+  const taken = merged.reduce((sum, band) => sum + band.hi - band.lo - gap, 0);
+  if (!(taken > 0)) return null;
+  const pieces: BrokenLayout['pieces'] = [];
+  let lo = -Infinity;
+  let shift = taken / 2;
+  for (const band of merged) {
+    pieces.push({ lo, hi: band.lo, shift });
+    shift -= band.hi - band.lo - gap;
+    lo = band.hi;
+  }
+  pieces.push({ lo, hi: Infinity, shift });
+  return pieces;
+}
+
+/** A placed point moved to where its piece of a broken view sits, or null in a band cut out. */
+function unbreak(view: ViewRecord, [x, y]: Point): Point | null {
+  const layout = view.breaks;
+  if (!layout) return [x, y];
+  const along = (layout.axis === 0 ? x : y) - view.origin[layout.axis];
+  const piece = layout.pieces.find((p) => along >= p.lo - 1e-9 && along <= p.hi + 1e-9);
+  if (!piece) return null;
+  return layout.axis === 0 ? [x + piece.shift, y] : [x, y + piece.shift];
+}
+
+/**
+ * Views SolidWorks shows broken: their edges, placed whole, fall far outside
+ * their (shortened) frame, so no bucket was given to them. A bucket facing
+ * the view, no wider than one set of break lines, that lands in the frame
+ * once its pieces are closed up can be that view's. Several views often look
+ * the same way at the same model (a view and its sections), so a bucket
+ * exactly as wide as a view's break lines is given first, starting with the
+ * views that have the fewest such; then whatever else still fits.
+ */
+function assignBroken(
+  views: ViewRecord[],
+  shown: Set<ViewRecord>,
+  buckets: Bucket[],
+  { bands, records }: { bands: BreakBand[]; records: BreakRecord[] },
+): void {
+  const taken = new Set(views.flatMap((view) => view.buckets));
+  // A view without a record of its own breaks like the others in the file.
+  const tally = new Map<number, number>();
+  for (const record of records) tally.set(record.gap, (tally.get(record.gap) ?? 0) + 1);
+  const usual = [...tally].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const facing = (v: ViewRecord, d: number[]) => v.rotation[2][0] * d[0] + v.rotation[2][1] * d[1] + v.rotation[2][2] * d[2] > 1 - 1e-6;
+  // Break lines of one view share their reach across it.
+  const groups = new Map<string, BreakBand[]>();
+  for (const band of bands) {
+    const key = `${band.axis}|${band.across[0].toFixed(5)}|${band.across[1].toFixed(5)}`;
+    groups.set(key, [...(groups.get(key) ?? []), band]);
+  }
+
+  interface Option {
+    view: ViewRecord;
+    layout: BrokenLayout;
+    fits: { n: number; exact: boolean }[];
+  }
+  const options: Option[] = [];
+  for (const view of views) {
+    if (!shown.has(view) || view.buckets.length > 0) continue;
+    // The break lines as wide as the view's frame first: other views' come after.
+    const reach = (group: BreakBand[]) => {
+      const other = group[0].axis === 0 ? 1 : 0;
+      const [c0, c1] = group[0].across;
+      return Math.abs(view.frame[other] - view.origin[other] - c0) + Math.abs(view.frame[other + 2] - view.origin[other] - c1);
+    };
+    for (const group of [...groups.values()].sort((a, b) => reach(a) - reach(b))) {
+      const axis = group[0].axis;
+      const other = axis === 0 ? 1 : 0;
+      const [c0, c1] = group[0].across;
+      const tol = Math.max(2e-4, (c1 - c0) * 0.01);
+      const candidates: { n: number; points: Point[]; exact: boolean }[] = [];
+      let u0 = Infinity;
+      let u1 = -Infinity;
+      for (let n = 0; n < buckets.length; n += 1) {
+        if (taken.has(n) || buckets[n].edges.length === 0 || !facing(view, buckets[n].direction)) continue;
+        const points = buckets[n].edges.flat().map((p) => place(view, p));
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const p of points) {
+          const across = p[other] - view.origin[other];
+          lo = Math.min(lo, across);
+          hi = Math.max(hi, across);
+        }
+        if (lo < c0 - tol || hi > c1 + tol) continue;
+        for (const p of points) {
+          const along = p[axis] - view.origin[axis];
+          u0 = Math.min(u0, along);
+          u1 = Math.max(u1, along);
+        }
+        candidates.push({ n, points, exact: Math.abs(lo - c0) <= tol && Math.abs(hi - c1) <= tol });
+      }
+      if (candidates.length === 0) continue;
+      const own = records.find(
+        (r) => (r.axis === null || r.axis === axis) && near(r.box[other], view.frame[other]) && near(r.box[other + 2], view.frame[other + 2]),
+      );
+      let gap = own?.gap ?? usual;
+      if (gap === null) {
+        // Nothing recorded: the gap that makes the pieces fill the frame, which
+        // usually holds the view to a fraction of a millimetre.
+        const width = group.reduce((sum, band) => sum + band.hi - band.lo, 0);
+        const removed = u1 - u0 - (view.frame[axis + 2] - view.frame[axis]);
+        const fitted = (width - removed) / group.length;
+        gap = fitted > -2e-3 && fitted < 0.05 ? Math.max(0, fitted) : 0.01;
+      }
+      const pieces = breakLayout(group, gap);
+      if (!pieces) continue;
+      if (own && own.shifts.length === pieces.length) own.shifts.forEach((shift, k) => (pieces[k].shift = shift));
+      const trial: ViewRecord = { ...view, breaks: { axis, pieces } };
+      const e = 1.5e-3;
+      const fits = candidates.filter(({ points }) => {
+        let inside = 0;
+        let kept = 0;
+        for (const p of points) {
+          const q = unbreak(trial, p);
+          if (!q) continue;
+          kept += 1;
+          if (q[0] >= view.frame[0] - e && q[0] <= view.frame[2] + e && q[1] >= view.frame[1] - e && q[1] <= view.frame[3] + e) inside += 1;
+        }
+        return kept > 0 && inside / kept >= 0.9;
+      });
+      if (fits.length === 0) continue;
+      options.push({ view, layout: { axis, pieces }, fits: fits.map(({ n, exact }) => ({ n, exact })) });
+      break;
+    }
+  }
+
+  const give = (option: Option, ns: number[]) => {
+    option.view.breaks = option.layout;
+    for (const n of ns) {
+      option.view.buckets.push(n);
+      taken.add(n);
+    }
+  };
+  for (;;) {
+    const open = options
+      .filter((option) => option.view.buckets.length === 0)
+      .map((option) => ({ option, exact: option.fits.filter((fit) => fit.exact && !taken.has(fit.n)).map((fit) => fit.n) }))
+      .filter(({ exact }) => exact.length > 0)
+      .sort((a, b) => a.exact.length - b.exact.length);
+    if (open.length === 0) break;
+    give(open[0].option, open[0].exact);
+  }
+  for (const option of options) {
+    if (option.view.buckets.length > 0) continue;
+    const rest = option.fits.filter((fit) => !taken.has(fit.n)).map((fit) => fit.n);
+    if (rest.length > 0) give(option, rest);
+  }
+}
+
 
 /**
  * View placements, anchored on the scale s at p: origin at p+10, outer and
@@ -665,6 +930,36 @@ function viewEdges(view: ViewRecord, buckets: Bucket[]): PathShape[] {
   const margin = 5e-4;
   const frame = [view.frame[0] - margin, view.frame[1] - margin, view.frame[2] + margin, view.frame[3] + margin];
   const shapes: PathShape[] = [];
+  // A segment as the sheet shows it: in a broken view, the parts of it on
+  // pieces kept, each moved with its piece.
+  const pieces = (a: Point, b: Point): [Point, Point][] => {
+    const layout = view.breaks;
+    if (!layout) return [[a, b]];
+    const axis = layout.axis;
+    const ta = a[axis] - view.origin[axis];
+    const tb = b[axis] - view.origin[axis];
+    const out: { s: number; part: [Point, Point] }[] = [];
+    for (const piece of layout.pieces) {
+      let s0 = 0;
+      let s1 = 1;
+      if (ta === tb) {
+        if (ta < piece.lo || ta > piece.hi) continue;
+      } else {
+        const u0 = (piece.lo - ta) / (tb - ta);
+        const u1 = (piece.hi - ta) / (tb - ta);
+        s0 = Math.max(0, Math.min(u0, u1));
+        s1 = Math.min(1, Math.max(u0, u1));
+        if (s1 <= s0) continue;
+      }
+      const at = (s: number): Point => {
+        const p: Point = s === 0 ? [a[0], a[1]] : s === 1 ? [b[0], b[1]] : [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s];
+        p[axis] += piece.shift;
+        return p;
+      };
+      out.push({ s: s0, part: [at(s0), at(s1)] });
+    }
+    return out.sort((x, y) => x.s - y.s).map((o) => o.part);
+  };
   for (const n of view.buckets) {
     for (const edge of buckets[n].edges) {
       const placed = edge.map((p) => place(view, p));
@@ -674,19 +969,23 @@ function viewEdges(view: ViewRecord, buckets: Bucket[]): PathShape[] {
         run = [];
       };
       for (let k = 1; k < placed.length; k += 1) {
-        let c = clip(placed[k - 1], placed[k], frame);
-        if (c && view.circle) c = clipCircle(c[0], c[1], view.circle.center, view.circle.radius);
-        if (!c) {
-          flush();
-          continue;
+        const parts = pieces(placed[k - 1], placed[k]);
+        if (parts.length === 0) flush();
+        for (const [from, to] of parts) {
+          let c = clip(from, to, frame);
+          if (c && view.circle) c = clipCircle(c[0], c[1], view.circle.center, view.circle.radius);
+          if (!c) {
+            flush();
+            continue;
+          }
+          if (run.length === 0) run.push(c[0]);
+          else if (Math.hypot(run[run.length - 1][0] - c[0][0], run[run.length - 1][1] - c[0][1]) > 1e-9) {
+            flush();
+            run.push(c[0]);
+          }
+          run.push(c[1]);
+          if (c[1][0] !== to[0] || c[1][1] !== to[1]) flush();
         }
-        if (run.length === 0) run.push(c[0]);
-        else if (Math.hypot(run[run.length - 1][0] - c[0][0], run[run.length - 1][1] - c[0][1]) > 1e-9) {
-          flush();
-          run.push(c[0]);
-        }
-        run.push(c[1]);
-        if (c[1][0] !== placed[k][0] || c[1][1] !== placed[k][1]) flush();
       }
       flush();
     }
@@ -868,6 +1167,9 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
   );
   const buckets = vb ? readBuckets(vb) : [];
   assignBuckets(allViews, shown, buckets, buckets.map((b) => b.direction));
+  const definition = streamOf(entries, 'Contents/Definition');
+  const breaks = definition ? readBreaks(definition) : null;
+  if (breaks && breaks.bands.length > 0) assignBroken(allViews, shown, buckets, breaks);
   const views = allViews.filter((view) => shown.has(view));
   findDetails(
     views,
@@ -1243,9 +1545,26 @@ export function drawingDiagnostics(entries: PackageEntry[]) {
   if (!dl) return null;
   const views = readViews(dl);
   const buckets = vb ? readBuckets(vb) : [];
+  // Which buckets the drawing gives each view, as readDrawing does.
+  const sheets = readSheets(dl);
+  const largest = sheets.reduce((a, b) => (a.width * a.height > b.width * b.height ? a : b), { width: 0.42, height: 0.297 });
+  const assigned = readViews(dl);
+  const shown = new Set(
+    assigned.filter((view) => {
+      const cx = (view.frame[0] + view.frame[2]) / 2;
+      const cy = (view.frame[1] + view.frame[3]) / 2;
+      return cx > -0.01 && cy > -0.01 && cx < largest.width + 0.01 && cy < largest.height + 0.01;
+    }),
+  );
+  assignBuckets(assigned, shown, buckets, buckets.map((b) => b.direction));
+  const definition = streamOf(entries, 'Contents/Definition');
+  const breaks = definition ? readBreaks(definition) : { bands: [], records: [] };
+  if (breaks.bands.length > 0) assignBroken(assigned, shown, buckets, breaks);
   return {
-    sheets: readSheets(dl).map((s) => ({ name: s.name, width: s.width, height: s.height, at: s.at })),
-    views: views.map((v) => ({
+    sheets: sheets.map((s) => ({ name: s.name, width: s.width, height: s.height, at: s.at })),
+    breaks: breaks.bands,
+    breakRecords: breaks.records,
+    views: views.map((v, k) => ({
       at: v.at,
       scale: v.scale,
       origin: v.origin,
@@ -1253,6 +1572,9 @@ export function drawingDiagnostics(entries: PackageEntry[]) {
       rotation: v.rotation,
       frame: v.frame,
       direction: v.rotation[2],
+      shown: shown.has(assigned[k]),
+      buckets: assigned[k].buckets,
+      broken: assigned[k].breaks ?? null,
     })),
     buckets: buckets.map((b) => ({
       direction: b.direction,

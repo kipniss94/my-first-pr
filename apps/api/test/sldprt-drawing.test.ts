@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { readDrawing, sheetSvg } from '../src/processing/sldprt/drawing.js';
+import { breakLayout, readBreaks, readDrawing, sheetSvg } from '../src/processing/sldprt/drawing.js';
 
 /**
  * The record grammar of a drawing's sheet graphics, on a stream built by hand
@@ -121,5 +121,58 @@ describe('drawing sheets', () => {
 
   it('says so when a file keeps no sheet graphics', () => {
     assert.equal(readDrawing([]), null);
+  });
+});
+
+describe('broken views', () => {
+  // A channel 300 mm long on the sheet, broken twice, as SolidWorks wrote it.
+  const point = (x: number, y: number) => f64(x, y, 0);
+  const breakLine = (name: string, lo: number, hi: number) =>
+    Buffer.concat([text(name), Buffer.alloc(215), point(0.02, lo), point(-0.02, lo), point(0.02, hi), point(-0.02, hi)]);
+  const shifts = [0.0660187, 0.0238409, -0.0660187];
+  const record = Buffer.concat([
+    u32(shifts.length),
+    ...shifts.map((dy) => f64(0, dy, 0)),
+    Buffer.alloc(56),
+    f64(0.0696, 0.0406, 0.1096, 0.3406),
+    Buffer.alloc(16),
+    u32(3),
+    Buffer.alloc(4),
+    Buffer.from([0xff, 0xff, 0xff, 0xff]),
+    f64(0.004, 0.003175),
+  ]);
+  const definition = Buffer.concat([
+    Buffer.alloc(16),
+    Buffer.from('moBreakLine_c', 'latin1'),
+    Buffer.alloc(2),
+    breakLine('Break Line1', -0.05017174, 0.04368781),
+    breakLine('Break Line2', -0.13809454, -0.09191671),
+    Buffer.alloc(400),
+    record,
+  ]);
+
+  it('reads the bands each break cuts out and the view record with its gap', () => {
+    const { bands, records } = readBreaks(definition);
+    assert.equal(bands.length, 2);
+    assert.deepEqual(bands[0], { axis: 1, lo: -0.05017174, hi: 0.04368781, across: [-0.02, 0.02] });
+    assert.equal(records.length, 1);
+    assert.equal(records[0].gap, 0.004);
+    assert.equal(records[0].axis, 1);
+    assert.deepEqual(records[0].shifts, shifts);
+  });
+
+  it('closes the pieces up around the middle of the view, the gap between each', () => {
+    const pieces = breakLayout(readBreaks(definition).bands, 0.004);
+    assert.ok(pieces);
+    assert.deepEqual(
+      pieces.map((p) => [p.lo, p.hi]),
+      [
+        [-Infinity, -0.13809454],
+        [-0.09191671, -0.05017174],
+        [0.04368781, Infinity],
+      ],
+    );
+    // The same moves SolidWorks recorded.
+    pieces.forEach((p, k) => assert.ok(Math.abs(p.shift - shifts[k]) < 1e-7, `piece ${k}: ${p.shift}`));
   });
 });
