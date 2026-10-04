@@ -153,7 +153,8 @@ const rgb = (colorref: number) => ((colorref & 0xff) << 16) | (colorref & 0xff00
 
 /**
  * SolidWorks' symbol library (kind 0x13 records name a library and a symbol)
- * as characters. Weld symbols and GOST view arrows have none and are left out.
+ * as characters. Weld signs, GOST view arrows and the like have none: they
+ * are shown from the sheet picture.
  */
 const SYMBOLS: Record<string, string> = {
   'MOD/DIAM': 'Ø',
@@ -166,6 +167,7 @@ const SYMBOLS: Record<string, string> = {
   'MOD/SPHD': 'SØ',
   'MOD/CL': '℄',
   'MOD/SQUARE': '□',
+  'MOD/BOX': '□',
   'MOD/DEPTH': '↧',
   'MOD/CBORE': '⌴',
   'MOD/CSINK': '⌵',
@@ -376,6 +378,8 @@ interface ViewRecord {
   breaks?: BrokenLayout;
   /** A detail view drawn from its parent's edges: how many times larger it is. */
   magnified?: number;
+  /** A view showing part of its model, inside a boundary the file does not keep. */
+  cropped?: boolean;
 }
 
 /* ------------------------------ broken views ------------------------------ */
@@ -547,6 +551,51 @@ function assignBroken(
     layout: BrokenLayout;
     fits: { n: number; exact: boolean }[];
   }
+  // A broken view can get its edges the ordinary way, when most of them land
+  // in its frame anyway (a long plate seen edge on, its far end off the
+  // sheet): break lines exactly its width, and edges reaching past its frame
+  // along them, say it is broken all the same.
+  for (const view of views) {
+    if (!shown.has(view) || view.buckets.length === 0 || view.breaks) continue;
+    for (const group of groups.values()) {
+      const axis = group[0].axis;
+      const other = axis === 0 ? 1 : 0;
+      const [c0, c1] = group[0].across;
+      const tol = Math.max(2e-4, (c1 - c0) * 0.01);
+      if (Math.abs(view.frame[other] - view.origin[other] - c0) > tol || Math.abs(view.frame[other + 2] - view.origin[other] - c1) > tol) continue;
+      const points = view.buckets.flatMap((n) => buckets[n].edges.flat().map((p) => place(view, p)));
+      const along = points.map((p) => p[axis] - view.origin[axis]);
+      const u0 = Math.min(...along);
+      const u1 = Math.max(...along);
+      const f0 = view.frame[axis] - view.origin[axis];
+      const f1 = view.frame[axis + 2] - view.origin[axis];
+      if (u1 - u0 <= f1 - f0 + 1e-3) continue;
+      const own = records.find((r) => (r.axis === null || r.axis === axis) && near(r.box[other], view.frame[other]) && near(r.box[other + 2], view.frame[other + 2]));
+      let gap = own?.gap ?? usual;
+      if (gap === null) {
+        const width = group.reduce((sum, band) => sum + band.hi - band.lo, 0);
+        const fitted = (width - (u1 - u0 - (f1 - f0))) / group.length;
+        gap = fitted > -2e-3 && fitted < 0.05 ? Math.max(0, fitted) : 0.01;
+      }
+      const pieces = breakLayout(group, gap);
+      if (!pieces) continue;
+      if (own && own.shifts.length === pieces.length) own.shifts.forEach((shift, k) => (pieces[k].shift = shift));
+      const trial: ViewRecord = { ...view, breaks: { axis, pieces } };
+      const e = 1.5e-3;
+      let inside = 0;
+      let kept = 0;
+      for (const p of points) {
+        const q = unbreak(trial, p);
+        if (!q) continue;
+        kept += 1;
+        if (q[0] >= view.frame[0] - e && q[0] <= view.frame[2] + e && q[1] >= view.frame[1] - e && q[1] <= view.frame[3] + e) inside += 1;
+      }
+      if (kept === 0 || inside / kept < 0.9) continue;
+      view.breaks = { axis, pieces };
+      break;
+    }
+  }
+
   const options: Option[] = [];
   for (const view of views) {
     if (!shown.has(view) || view.buckets.length > 0) continue;
@@ -574,13 +623,22 @@ function assignBroken(
           lo = Math.min(lo, across);
           hi = Math.max(hi, across);
         }
-        if (lo < c0 - tol || hi > c1 + tol) continue;
+        // The break lines span the view where it is cut, which may be narrower
+        // than the view: a bucket no wider than them, or one spanning them and
+        // no wider than the frame.
+        const f0 = view.frame[other] - view.origin[other];
+        const f1 = view.frame[other + 2] - view.origin[other];
+        const withinLines = lo >= c0 - tol && hi <= c1 + tol;
+        const acrossLines = lo <= c0 + tol && hi >= c1 - tol && lo >= f0 - tol && hi <= f1 + tol;
+        if (!withinLines && !acrossLines) continue;
         for (const p of points) {
           const along = p[axis] - view.origin[axis];
           u0 = Math.min(u0, along);
           u1 = Math.max(u1, along);
         }
-        candidates.push({ n, points, exact: Math.abs(lo - c0) <= tol && Math.abs(hi - c1) <= tol });
+        const exact =
+          (Math.abs(lo - c0) <= tol && Math.abs(hi - c1) <= tol) || (acrossLines && Math.abs(lo - f0) <= tol && Math.abs(hi - f1) <= tol);
+        candidates.push({ n, points, exact });
       }
       if (candidates.length === 0) continue;
       const own = records.find(
@@ -948,6 +1006,96 @@ function findDetails(views: ViewRecord[], circles: { center: Point; radius: numb
       view.magnified = view.scale / parent.scale;
     }
   }
+}
+
+/**
+ * Views that show part of their model — a section cut short by a spline —
+ * are left without edges: their bucket reaches far past their frame. A free
+ * bucket looking the same way that covers the whole frame is theirs; what
+ * of it the view shows is told by the sheet picture (see `cropToPicture`).
+ */
+function assignCropped(views: ViewRecord[], buckets: Bucket[]): void {
+  const used = new Set(views.flatMap((view) => view.buckets));
+  const facing = (v: ViewRecord, d: number[]) => v.rotation[2][0] * d[0] + v.rotation[2][1] * d[1] + v.rotation[2][2] * d[2] > 1 - 1e-6;
+  const e = 1e-3;
+  for (const view of views) {
+    if (view.buckets.length > 0) continue;
+    for (let n = 0; n < buckets.length; n += 1) {
+      if (used.has(n) || buckets[n].edges.length === 0 || !facing(view, buckets[n].direction)) continue;
+      const box = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const edge of buckets[n].edges) {
+        for (const p of edge) {
+          const [x, y] = place(view, p);
+          box[0] = Math.min(box[0], x);
+          box[1] = Math.min(box[1], y);
+          box[2] = Math.max(box[2], x);
+          box[3] = Math.max(box[3], y);
+        }
+      }
+      const [x0, y0, x1, y1] = view.frame;
+      if (box[0] > x0 + e || box[1] > y0 + e || box[2] < x1 - e || box[3] < y1 - e) continue;
+      view.buckets.push(n);
+      view.cropped = true;
+      used.add(n);
+    }
+  }
+}
+
+/**
+ * The parts of a cropped view's edges the sheet picture shows: each edge
+ * followed every quarter millimetre, kept where it lies on ink, gaps of up
+ * to a millimetre bridged, runs under a millimetre dropped.
+ */
+function cropToPicture(shapes: Shape[], inked: (p: Point) => boolean): Shape[] {
+  const out: Shape[] = [];
+  const step = 0.00025;
+  for (const shape of shapes) {
+    if (shape.kind !== 'path') {
+      out.push(shape);
+      continue;
+    }
+    // Every point along the edge, with whether it is on ink.
+    const along: { p: Point; on: boolean }[] = [];
+    for (let k = 1; k < shape.points.length; k += 1) {
+      const [a, b] = [shape.points[k - 1], shape.points[k]];
+      const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+      for (let s = k === 1 ? 0 : 1; s <= steps; s += 1) {
+        const p: Point = [a[0] + ((b[0] - a[0]) * s) / steps, a[1] + ((b[1] - a[1]) * s) / steps];
+        along.push({ p, on: inked(p) });
+      }
+    }
+    // Short gaps bridged: a line crossing another, or a missed pixel.
+    const bridge = Math.round(0.001 / step);
+    for (let i = 0; i < along.length; ) {
+      if (along[i].on) {
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (j < along.length && !along[j].on) j += 1;
+      if (i > 0 && j < along.length && j - i <= bridge) for (let k = i; k < j; k += 1) along[k].on = true;
+      i = j;
+    }
+    let run: Point[] = [];
+    const flush = () => {
+      if (run.length * step >= 0.001) {
+        // Points on a straight stretch say nothing: kept are the ends and the turns.
+        const kept = run.filter((p, k) => {
+          if (k === 0 || k === run.length - 1) return true;
+          const [a, b] = [run[k - 1], run[k + 1]];
+          return Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) > 1e-10;
+        });
+        out.push({ ...shape, points: kept });
+      }
+      run = [];
+    };
+    for (const { p, on } of along) {
+      if (on) run.push(p);
+      else flush();
+    }
+    flush();
+  }
+  return out;
 }
 
 /**
@@ -1363,6 +1511,7 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
     annotations.flatMap(({ shape }) => (shape.kind === 'path' && shape.circle ? [shape.circle] : [])),
     buckets,
   );
+  assignCropped(views, buckets);
 
   for (const view of views) {
     let edges = viewEdges(view, buckets);
@@ -1373,6 +1522,8 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
         ? every.filter((_, n) => n % Math.max(1, Math.floor(every.length / 300)) === 0)
         : [view.origin, [view.frame[0], view.frame[1]], [view.frame[2], view.frame[3]]],
     );
+    // A cropped view: what of its edges the picture shows, or nothing without one.
+    if (view.cropped) edges = rasters[k] ? (cropToPicture(edges, (p) => onSheet(k, p)) as PathShape[]) : [];
     // A bucket keeps its edges in groups, and some groups are edges the view
     // does not show — tangent edges, when the view removes them. A group
     // whose length lies on blank paper while another of the view's is inked
