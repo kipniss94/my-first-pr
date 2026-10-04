@@ -141,10 +141,13 @@ export function appearance(
     const n = data[i + 3];
     const end = i + 4 + n * 2;
     if (n > 0 && end + 9 <= data.length && data[end] <= 3 && data[end + 4] === 0 && data.readFloatLE(end + 5) === 1) {
-      const color: [number, number, number] = [data[end + 1], data[end + 2], data[end + 3]];
+      let color: [number, number, number] = [data[end + 1], data[end + 2], data[end + 3]];
       // A grey metal saved with a loud colour (pure red on a stainless bolt)
       // is a material SolidWorks did not find, not the colour it showed.
       const material = data.subarray(i + 4, end).toString('utf16le');
+      // A textured material (wood, glass…) keeps white as its tint: the
+      // picture gives its colour, so the colour it mostly has stands in.
+      if (color.every((c) => c >= 240)) color = TEXTURES.find(([pattern]) => pattern.test(material))?.[1] ?? color;
       const max = Math.max(...color);
       const loud = max > 0 && (max - Math.min(...color)) / max > 0.6;
       const grey = /steel|alumin|nickel|chrom|zinc|galvani|iron|titan/i.test(material);
@@ -153,6 +156,23 @@ export function appearance(
   }
   return null;
 }
+
+/** Textured appearances, by name, and the colour each mostly shows. */
+const TEXTURES: [RegExp, [number, number, number]][] = [
+  [/walnut/i, [112, 74, 48]],
+  [/mahogany/i, [122, 58, 42]],
+  [/cherry/i, [158, 92, 62]],
+  [/teak/i, [158, 108, 62]],
+  [/oak/i, [178, 128, 78]],
+  [/pine/i, [214, 172, 112]],
+  [/maple|birch|beech|ash/i, [222, 190, 142]],
+  [/wood|plywood|veneer|bamboo/i, [190, 146, 96]],
+  [/glass/i, [205, 226, 236]],
+  [/concrete|cement/i, [172, 172, 166]],
+  [/brick/i, [160, 82, 62]],
+  [/granite|marble|stone/i, [196, 194, 190]],
+  [/carpet|fabric|cloth|leather/i, [110, 100, 92]],
+];
 
 /** What stands in front of a face's colour pointer, in the two record versions seen. */
 const SLOTS = [Buffer.from([1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]), Buffer.from([2, 0, 0, 0, 1, 0, 0, 0])];
