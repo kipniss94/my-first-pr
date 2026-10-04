@@ -57,6 +57,8 @@ export interface PathShape {
   edge?: boolean;
   /** Set when the arc it came from is a whole circle. */
   circle?: { center: Point; radius: number };
+  /** A view edge's bucket and group in it, as 'bucket:group'. */
+  layer?: string;
 }
 
 export interface TextShape {
@@ -188,8 +190,15 @@ interface Located<T> {
   shape: T;
 }
 
+/** A library symbol with no character for it — a GOST weld sign, a view arrow — where it stands. */
+interface SymbolBox {
+  at: Point;
+  angle: number;
+  height: number;
+}
+
 /** Every pen, segment, polyline, arc, font and text in the sheet stream, in order. */
-function readAnnotations(dl: Buffer): Located<Shape>[] {
+function readAnnotations(dl: Buffer, unmatched: Located<SymbolBox>[] = []): Located<Shape>[] {
   const out: Located<Shape>[] = [];
   let pen = DEFAULT_PEN;
   let font = { height: 0.0035, name: 'GOST type A' };
@@ -254,6 +263,7 @@ function readAnnotations(dl: Buffer): Located<Shape>[] {
       const name = library ? cstring(dl, library.end) : null;
       if (library && name) {
         const glyph = SYMBOLS[`${library.text}/${name.text}`];
+        if (!glyph && v[3] > 0 && v[3] < 0.2) unmatched.push({ at: i, shape: { at: [v[0], v[1]], angle: v[2], height: v[3] } });
         if (glyph && v[3] > 0 && v[3] < 0.2) {
           out.push({
             at: i,
@@ -364,6 +374,8 @@ interface ViewRecord {
   circle?: { center: Point; radius: number };
   /** A broken view: the pieces kept, along one sheet axis, and how far each moves. */
   breaks?: BrokenLayout;
+  /** A detail view drawn from its parent's edges: how many times larger it is. */
+  magnified?: number;
 }
 
 /* ------------------------------ broken views ------------------------------ */
@@ -686,6 +698,8 @@ interface Bucket {
   /** The direction its header starts with; usually, not always, its view's. */
   direction: number[];
   edges: number[][][];
+  /** Each edge's group: the bucket keeps its edges in groups, 12 zero bytes and a count before each. */
+  groups: number[];
 }
 
 /**
@@ -717,6 +731,8 @@ function readBuckets(vb: Buffer): Bucket[] {
       const end = starts[index + 1] ?? vb.length;
       const direction = [0, 1, 2].map((j) => vb.readDoubleLE(start + j * 8));
       const edges: number[][][] = [];
+      const groups: number[] = [];
+      let group = -1;
       for (let i = start + 4; i + 4 + stride * 2 <= end; i += 1) {
         const n = vb.readUInt32LE(i);
         if (n < 2 || n > 100_000 || i + 4 + n * stride > end) continue;
@@ -741,10 +757,15 @@ function readBuckets(vb: Buffer): Bucket[] {
           points.push(q);
         }
         if (!good || points.every((q) => q[0] === points[0][0] && q[1] === points[0][1] && q[2] === points[0][2])) continue;
+        // The record starts 12 bytes before the count: id, 1, a flag. A group starts
+        // where the four bytes before it are a count after twelve zero bytes.
+        const record = i - 12;
+        if (record >= 16 && vb.readUInt32LE(record - 4) > 0 && vb.subarray(record - 16, record - 4).every((b) => b === 0)) group += 1;
         edges.push(points);
+        groups.push(Math.max(0, group));
         i += 3 + n * stride;
       }
-      return { direction, edges };
+      return { direction, edges, groups };
     });
   };
   const doubles = scan(8);
@@ -907,6 +928,7 @@ function findDetails(views: ViewRecord[], circles: { center: Point; radius: numb
     if (best) {
       view.buckets.push(...best.parent.buckets);
       view.circle = { center: best.center, radius: best.radius };
+      view.magnified = view.scale / best.parent.scale;
       continue;
     }
     // No circle: a detail with a rectangular boundary — its frame. The parent
@@ -921,8 +943,136 @@ function findDetails(views: ViewRecord[], circles: { center: Point; radius: numb
         parent = candidate;
       }
     }
-    if (parent) view.buckets.push(...parent.buckets);
+    if (parent) {
+      view.buckets.push(...parent.buckets);
+      view.magnified = view.scale / parent.scale;
+    }
   }
+}
+
+/**
+ * The hatch lines a magnified view is missing. Hatching is straight lines,
+ * slanted (never along the axes, where model edges run), in rows at one
+ * spacing; between each two neighbouring rows `round(factor) − 1` lines are
+ * added, each segment's ends taken between those of the segment beside it.
+ */
+export function hatchBetween(segments: [Point, Point][], factor: number): [Point, Point][] {
+  const added: [Point, Point][] = [];
+  const between = Math.round(factor) - 1;
+  if (between < 1) return added;
+  // A bucket keeps its hatch lines twice; a chamfer at 45° is there once.
+  // When lines come twice, only those are hatching.
+  const key = ([p, q]: [Point, Point]) => {
+    const [a, b] = p[0] < q[0] || (p[0] === q[0] && p[1] < q[1]) ? [p, q] : [q, p];
+    return [a[0], a[1], b[0], b[1]].map((v) => Math.round(v * 1e6)).join(',');
+  };
+  const copies = new Map<string, number>();
+  for (const segment of segments) copies.set(key(segment), (copies.get(key(segment)) ?? 0) + 1);
+  const twice = segments.filter((segment) => (copies.get(key(segment)) ?? 0) > 1);
+  // By direction, half a degree apart.
+  const directions = new Map<number, { u: Point; lines: { offset: number; lo: number; hi: number }[] }>();
+  for (const [p, q] of twice.length >= 6 ? twice : segments) {
+    const length = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (length < 1e-4) continue;
+    let ux = (q[0] - p[0]) / length;
+    let uy = (q[1] - p[1]) / length;
+    if (uy < 0 || (uy === 0 && ux < 0)) {
+      ux = -ux;
+      uy = -uy;
+    }
+    const degrees = Math.round(((Math.atan2(uy, ux) * 180) / Math.PI) * 2) / 2;
+    if (Math.abs(degrees % 90) < 5 || Math.abs(degrees % 90) > 85) continue;
+    const key = degrees % 180;
+    const entry = directions.get(key) ?? { u: [ux, uy] as Point, lines: [] };
+    const [vx, vy] = entry.u;
+    const a = p[0] * vx + p[1] * vy;
+    const b = q[0] * vx + q[1] * vy;
+    entry.lines.push({ offset: p[1] * vx - p[0] * vy, lo: Math.min(a, b), hi: Math.max(a, b) });
+    directions.set(key, entry);
+  }
+  for (const { u, lines } of directions.values()) {
+    // Rows of segments at one offset, duplicates dropped.
+    const rows: { offset: number; spans: { lo: number; hi: number }[] }[] = [];
+    for (const line of [...lines].sort((x, y) => x.offset - y.offset)) {
+      const row = rows[rows.length - 1];
+      if (row && line.offset - row.offset < 1e-6) {
+        if (!row.spans.some((s) => Math.abs(s.lo - line.lo) < 1e-6 && Math.abs(s.hi - line.hi) < 1e-6)) row.spans.push(line);
+      } else rows.push({ offset: line.offset, spans: [{ lo: line.lo, hi: line.hi }] });
+    }
+    // Neighbouring rows at the spacing of the rows around them.
+    const gap = (k: number) => rows[k + 1].offset - rows[k].offset;
+    for (let k = 0; k + 1 < rows.length; k += 1) {
+      const g = gap(k);
+      const steady = (j: number) => j >= 0 && j + 1 < rows.length && Math.abs(gap(j) - g) <= g * 0.03;
+      if (g < 1e-4 || !(steady(k - 1) || steady(k + 1))) continue;
+      for (const a of rows[k].spans) {
+        // The segment of the next row beside this one: the one overlapping most.
+        let best: { lo: number; hi: number } | null = null;
+        let overlap = 0;
+        for (const b of rows[k + 1].spans) {
+          const o = Math.min(a.hi, b.hi) - Math.max(a.lo, b.lo);
+          if (o > overlap) {
+            overlap = o;
+            best = b;
+          }
+        }
+        if (!best) continue;
+        for (let j = 1; j <= between; j += 1) {
+          const t = j / (between + 1);
+          const offset = rows[k].offset + g * t;
+          // A boundary crossing the rows: the ends move along it. Ends far
+          // apart are a corner between them, past which the line would run
+          // into a hole: there only the length both rows share.
+          const lo = Math.abs(best.lo - a.lo) <= g * 3 ? a.lo + (best.lo - a.lo) * t : Math.max(a.lo, best.lo);
+          const hi = Math.abs(best.hi - a.hi) <= g * 3 ? a.hi + (best.hi - a.hi) * t : Math.min(a.hi, best.hi);
+          if (hi - lo < 1e-4) continue;
+          const at = (along: number): Point => [u[0] * along - u[1] * offset, u[1] * along + u[0] * offset];
+          added.push([at(lo), at(hi)]);
+        }
+      }
+    }
+  }
+  return added;
+}
+
+/**
+ * A hatch line's ends set on the outline it fills: from its middle, both
+ * ways to the nearest edge it crosses (within its own length again, so a
+ * line whose middle is off the region keeps its guessed ends).
+ */
+function toOutline([a, b]: [Point, Point], outlines: Point[][]): [Point, Point] {
+  const length = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  if (length < 1e-9) return [a, b];
+  const u: Point = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+  const m: Point = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  let before = -Infinity;
+  let after = Infinity;
+  // Only what lies within a length of the middle can end it.
+  const x0 = m[0] - length;
+  const x1 = m[0] + length;
+  const y0 = m[1] - length;
+  const y1 = m[1] + length;
+  for (const line of outlines) {
+    for (let k = 1; k < line.length; k += 1) {
+      const p = line[k - 1];
+      const q = line[k];
+      if ((p[0] < x0 && q[0] < x0) || (p[0] > x1 && q[0] > x1) || (p[1] < y0 && q[1] < y0) || (p[1] > y1 && q[1] > y1)) continue;
+      const d: Point = [q[0] - p[0], q[1] - p[1]];
+      const det = u[0] * -d[1] + u[1] * d[0];
+      if (Math.abs(det) < 1e-12) continue;
+      const w: Point = [p[0] - m[0], p[1] - m[1]];
+      const t = (w[0] * -d[1] + w[1] * d[0]) / det;
+      const s = (u[0] * w[1] - u[1] * w[0]) / det;
+      if (s < -1e-9 || s > 1 + 1e-9) continue;
+      if (t < -1e-9 && t > before) before = t;
+      if (t > 1e-9 && t < after) after = t;
+    }
+  }
+  if (!(before > -length) || !(after < length)) return [a, b];
+  return [
+    [m[0] + u[0] * before, m[1] + u[1] * before],
+    [m[0] + u[0] * after, m[1] + u[1] * after],
+  ];
 }
 
 /** A view's edges on the sheet, cropped to its frame (and a detail view's to its circle). */
@@ -960,12 +1110,20 @@ function viewEdges(view: ViewRecord, buckets: Bucket[]): PathShape[] {
     }
     return out.sort((x, y) => x.s - y.s).map((o) => o.part);
   };
+  const straight: [Point, Point][] = [];
+  const outlines: Point[][] = [];
   for (const n of view.buckets) {
-    for (const edge of buckets[n].edges) {
+    buckets[n].edges.forEach((edge, e) => {
+      const layer = n + ":" + buckets[n].groups[e];
       const placed = edge.map((p) => place(view, p));
+      if (placed.length === 2) straight.push([placed[0], placed[1]]);
+      // A detail view shows little of its parent: only edges reaching its frame bound its hatching.
+      if (view.magnified && placed.some((p) => p[0] >= frame[0] && p[0] <= frame[2] && p[1] >= frame[1] && p[1] <= frame[3])) {
+        outlines.push(placed);
+      } else if (view.magnified && placed.length === 2 && clip(placed[0], placed[1], frame)) outlines.push(placed);
       let run: Point[] = [];
       const flush = () => {
-        if (run.length >= 2) shapes.push({ kind: 'path', points: run, pen: EDGE_PEN, edge: true });
+        if (run.length >= 2) shapes.push({ kind: 'path', points: run, pen: EDGE_PEN, edge: true, layer });
         run = [];
       };
       for (let k = 1; k < placed.length; k += 1) {
@@ -988,6 +1146,17 @@ function viewEdges(view: ViewRecord, buckets: Bucket[]): PathShape[] {
         }
       }
       flush();
+    });
+  }
+  // Section hatching comes with the parent's edges and is magnified with
+  // them: in a detail view twice the size its lines stand twice as far apart.
+  // SolidWorks keeps hatching the same on paper, so the lines between are added.
+  if (view.magnified && view.magnified > 1.3) {
+    for (const guess of hatchBetween(straight, view.magnified)) {
+      const [from, to] = toOutline(guess, outlines);
+      let c = clip(from, to, frame);
+      if (c && view.circle) c = clipCircle(c[0], c[1], view.circle.center, view.circle.radius);
+      if (c) shapes.push({ kind: 'path', points: [c[0], c[1]], pen: EDGE_PEN, edge: true, layer: 'hatch' });
     }
   }
   // The detail circle itself, where it crosses the view: its boundary.
@@ -1022,6 +1191,23 @@ function samples(shape: Shape): Point[] {
   if (shape.kind === 'text') return [shape.at];
   const step = Math.max(1, Math.ceil(shape.points.length / 12));
   return shape.points.filter((_, k) => k % step === 0);
+}
+
+/**
+ * Points along a polyline every half millimetre, the first and last fifth of
+ * each segment left out: an edge's ends touch other edges, its middle is its own.
+ */
+function along(points: Point[]): Point[] {
+  const out: Point[] = [];
+  for (let k = 1; k < points.length && out.length < 400; k += 1) {
+    const [a, b] = [points[k - 1], points[k]];
+    const steps = Math.min(400, Math.floor(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.0005));
+    for (let s = 1; s < steps; s += 1) {
+      const t = s / steps;
+      if (t > 0.2 && t < 0.8) out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
 }
 
 /** Standard sheets, metres, landscape; portrait is tried too. */
@@ -1091,7 +1277,8 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
   const vb = streamOf(entries, 'Contents/VBLists');
 
   const records = readSheets(dl);
-  const annotations = readAnnotations(dl);
+  const unmatched: Located<SymbolBox>[] = [];
+  const annotations = readAnnotations(dl, unmatched);
   const sheetRecords: SheetRecord[] =
     records.length > 0 ? records : [{ at: dl.length, name: 'Sheet1', ...paperOf(annotations.map((a) => a.shape)) }];
   const images = sheetRecords.map((_, k) => entries.find((e) => e.name === `Images/Sheet_${k}`)?.data ?? null);
@@ -1178,11 +1365,55 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
   );
 
   for (const view of views) {
-    const edges = viewEdges(view, buckets);
+    let edges = viewEdges(view, buckets);
+    const every: Point[] = [];
+    for (const shape of edges) every.push(...samples(shape));
+    const k = byInk(
+      every.length > 0
+        ? every.filter((_, n) => n % Math.max(1, Math.floor(every.length / 300)) === 0)
+        : [view.origin, [view.frame[0], view.frame[1]], [view.frame[2], view.frame[3]]],
+    );
+    // A bucket keeps its edges in groups, and some groups are edges the view
+    // does not show — tangent edges, when the view removes them. A group
+    // whose length lies on blank paper while another of the view's is inked
+    // is left out.
+    // So is a long edge lying wholly on blank paper in a view the picture
+    // otherwise shows — a sketch line or an axis kept with the edges.
+    if (rasters[k]) {
+      const layers = new Map<string, { on: number; all: number }>();
+      const own = new Map<Shape, { on: number; all: number }>();
+      for (const shape of edges) {
+        if (shape.kind !== 'path' || !shape.layer) continue;
+        const tally = layers.get(shape.layer) ?? { on: 0, all: 0 };
+        const mine = { on: 0, all: 0 };
+        for (const p of along(shape.points)) {
+          const hit = onSheet(k, p);
+          tally.all += 1;
+          mine.all += 1;
+          if (hit) {
+            tally.on += 1;
+            mine.on += 1;
+          }
+        }
+        layers.set(shape.layer, tally);
+        own.set(shape, mine);
+      }
+      const measured = [...layers].filter(([, t]) => t.all >= 20);
+      const blank = new Set(measured.filter(([, t]) => t.on / t.all < 0.25).map(([layer]) => layer));
+      if (blank.size > 0 && measured.some(([, t]) => t.on / t.all >= 0.7)) {
+        edges = edges.filter((shape) => !(shape.kind === 'path' && shape.layer && blank.has(shape.layer)));
+      }
+      const total = [...own.values()].reduce((sum, t) => ({ on: sum.on + t.on, all: sum.all + t.all }), { on: 0, all: 0 });
+      if (total.all > 0 && total.on / total.all >= 0.8) {
+        edges = edges.filter((shape) => {
+          const t = own.get(shape);
+          return !t || t.all < 30 || t.on / t.all >= 0.3;
+        });
+      }
+    }
     const all: Point[] = [];
     for (const shape of edges) all.push(...samples(shape));
     const points = all.filter((_, n) => n % Math.max(1, Math.floor(all.length / 300)) === 0);
-    const k = byInk(points.length > 0 ? points : [view.origin, [view.frame[0], view.frame[1]], [view.frame[2], view.frame[3]]]);
     // How much of the view the sheet picture shows. A view SolidWorks does not
     // draw — hidden — still has its record and edges, but they fall on paper.
     const ink = rasters[k] && points.length > 0 ? points.filter((p) => onSheet(k, p)).length / points.length : null;
@@ -1202,10 +1433,16 @@ export function readDrawing(entries: PackageEntry[]): Drawing | null {
       edges: edges.length,
     });
   }
+  // Symbols with no character are shown from the picture, as SolidWorks drew them.
+  const signs: SymbolBox[][] = sheets.map(() => []);
+  for (const { at, shape } of unmatched) {
+    const k = sheetRecords.findIndex((record) => at < record.at);
+    signs[k < 0 || at >= lastRecord ? byInk([shape.at]) : k].push(shape);
+  }
   sheets.forEach((sheet, k) => {
     const raster = rasters[k];
     const map = maps[k];
-    if (raster && map) sheet.patches = missingRegions(sheet, raster, map);
+    if (raster && map) sheet.patches = missingRegions(sheet, raster, map, signs[k]);
   });
   return { sheets };
 }
@@ -1339,7 +1576,7 @@ function registerPicture(shapes: Shape[], sheet: { width: number; height: number
  * dark pixels are grouped into regions. Specks — a filled arrowhead drawn as
  * an outline, the odd pixel of a different font — are not worth a patch.
  */
-function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap): [number, number, number, number][] {
+function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap, signs: SymbolBox[] = []): [number, number, number, number][] {
   const { width: W, height: H } = raster;
   const s = map.scale;
   const toPx = ([x, y]: Point): Point => [map.x + x * s, map.y - y * s];
@@ -1392,6 +1629,38 @@ function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap)
         Math.max(...corners.map((p) => p[0])),
         Math.max(...corners.map((p) => p[1])),
       );
+    }
+  }
+
+  // Symbols with no character: their box of the picture, when it has ink.
+  // A sign stands on its point and reaches about twice its height along.
+  const forced: [number, number, number, number][] = [];
+  for (const sign of signs) {
+    const h = sign.height;
+    const c = Math.cos(sign.angle);
+    const n = Math.sin(sign.angle);
+    const corners = [
+      [-0.15 * h, -0.4 * h],
+      [2.3 * h, -0.4 * h],
+      [2.3 * h, 1.3 * h],
+      [-0.15 * h, 1.3 * h],
+    ].map(([u, v]): Point => [sign.at[0] + u * c - v * n, sign.at[1] + u * n + v * c]);
+    const box = [
+      Math.min(...corners.map((p) => p[0])),
+      Math.min(...corners.map((p) => p[1])),
+      Math.max(...corners.map((p) => p[0])),
+      Math.max(...corners.map((p) => p[1])),
+    ];
+    const [px0, py1] = toPx([box[0], box[1]]);
+    const [px1, py0] = toPx([box[2], box[3]]);
+    let ink = 0;
+    for (let y = Math.max(0, Math.floor(py0)); y <= Math.min(H - 1, Math.ceil(py1)); y += 1) {
+      for (let x = Math.max(0, Math.floor(px0)); x <= Math.min(W - 1, Math.ceil(px1)); x += 1) if (raster.dark(x, y)) ink += 1;
+    }
+    if (ink < 4) continue;
+    forced.push([Math.max(0, box[0]), Math.max(0, box[1]), Math.min(sheet.width, box[2]), Math.min(sheet.height, box[3])]);
+    for (let y = Math.max(0, Math.floor(py0)); y <= Math.min(H - 1, Math.ceil(py1)); y += 1) {
+      for (let x = Math.max(0, Math.floor(px0)); x <= Math.min(W - 1, Math.ceil(px1)); x += 1) covered[y * W + x] = 1;
     }
   }
 
@@ -1449,7 +1718,7 @@ function missingRegions(sheet: DrawingSheet, raster: PngRaster, map: PictureMap)
       Math.min(sheet.height, (map.y - py0) / s),
     ]);
   }
-  return regions;
+  return [...forced, ...regions];
 }
 
 /* ---------------------------------- SVG ----------------------------------- */
