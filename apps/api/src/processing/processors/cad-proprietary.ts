@@ -467,6 +467,7 @@ async function processAssembly(
     return storedIds.get(faces) ?? undefined;
   });
   let storedGeometry: string | null = null;
+  const storedCount = storedOf.filter((id) => id !== undefined).length;
   if (storedMeshes.length > 0) {
     ctx.progress('preparing-geometry', 88);
     await writeNmg(
@@ -493,9 +494,13 @@ async function processAssembly(
     note:
       external.length === 0
         ? `All ${tree.instances.length} parts of this assembly are saved inside it and are drawn in place.`
-        : `This assembly places ${external.length} part occurrence(s) from ${componentNames.length} part file(s)${
-            drawnInside ? `, and ${drawnInside} more saved inside it` : ''
-          }. Add the part files — or drop the whole folder — and each part appears where it belongs.`,
+        : storedCount > 0
+          ? `This assembly places ${external.length} part occurrence(s) from ${componentNames.length} part file(s)${
+              drawnInside ? `, and ${drawnInside} more saved inside it` : ''
+            }; ${storedCount} of them are drawn from the graphics SolidWorks saved in the assembly until their files are added. Add the part files — or drop the whole folder — for their exact geometry.`
+          : `This assembly places ${external.length} part occurrence(s) from ${componentNames.length} part file(s)${
+              drawnInside ? `, and ${drawnInside} more saved inside it` : ''
+            }. Add the part files — or drop the whole folder — and each part appears where it belongs.`,
     placements: external.map(({ component, configuration, path, matrix }, k) => ({
       component,
       configuration,

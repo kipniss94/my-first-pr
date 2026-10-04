@@ -201,7 +201,9 @@ function readColours(data: Buffer, spans: { at: number; end: number }[]): ([numb
   let counter = tag & 0x7fff;
   const colours = new Map<number, [number, number, number]>();
   if (counting && body && bodyClassAt >= 0 && faceClassAt - bodyClassAt <= 40) colours.set(counter - 3, body);
-  let classSeen = data.lastIndexOf(PROPS_CLASS, spans[0].at) >= 0;
+  // Where the colour class is defined, looked up once: per face, a miss would scan to the end.
+  const propsClassAt = data.indexOf(PROPS_CLASS);
+  let classSeen = propsClassAt >= 0 && propsClassAt < spans[0].at;
 
   for (let k = 0; k < spans.length; k += 1) {
     const from = spans[k].end;
@@ -211,7 +213,7 @@ function readColours(data: Buffer, spans: { at: number; end: number }[]): ([numb
 
     // Every colour stored new in this stretch, each with its index.
     const stored: { start: number; end: number; index: number; color: [number, number, number] | null }[] = [];
-    const classAt = classSeen ? -1 : data.indexOf(PROPS_CLASS, from);
+    const classAt = !classSeen && propsClassAt >= from && propsClassAt < to ? propsClassAt : -1;
     for (let cursor = from; ; ) {
       const found = appearance(data, cursor, to);
       if (!found) break;
@@ -249,7 +251,10 @@ function readColours(data: Buffer, spans: { at: number; end: number }[]): ([numb
       let pointer = 0;
       if (to - 34 >= from && data.subarray(to - 34, to - 26).equals(SLOTS[0])) pointer = data.readUInt16LE(to - 26);
       else {
-        for (let s = data.indexOf(SLOTS[1], from); s >= 0 && s + 16 <= to; s = data.indexOf(SLOTS[1], s + 1)) {
+        // Searched within this face's stretch only: past it, every face would scan to the end.
+        const stretch = data.subarray(from, Math.max(from, to));
+        for (let r = stretch.indexOf(SLOTS[1]); r >= 0 && from + r + 16 <= to; r = stretch.indexOf(SLOTS[1], r + 1)) {
+          const s = from + r;
           if (data.readUInt32LE(s + 10) !== 2) continue;
           const second = data.readUInt16LE(s + 14);
           pointer = second !== 0 && second < 0x8000 ? second : data.readUInt16LE(s + 8);

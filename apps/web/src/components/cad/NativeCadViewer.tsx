@@ -123,6 +123,9 @@ export function NativeCadViewer({
   }
   const inScene = new Set(renderable.map((component) => component.name.toLowerCase()));
   const placedCount = (document.placements ?? []).filter((p) => inScene.has(p.component.toLowerCase())).length;
+  const storedCount = document.storedGeometry
+    ? (document.placements ?? []).filter((p) => p.stored !== undefined && !inScene.has(p.component.toLowerCase())).length
+    : 0;
   // Where the parts were kept when the assembly was saved: the one folder to
   // choose so that every one of them is found.
   // Library parts kept on another drive or root (Toolbox fasteners, say) are
@@ -176,6 +179,7 @@ export function NativeCadViewer({
             storage={storage}
             placed={placedCount}
             placementsTotal={document.placements?.length ?? 0}
+            stored={storedCount}
             onAdd={add}
             rejected={rejected}
             onDismissRejected={dismissRejected}

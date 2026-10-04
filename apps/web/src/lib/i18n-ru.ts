@@ -738,6 +738,14 @@ export const RU_PATTERNS: [RegExp, string][] = [
     'Сборка ставит вхождений деталей: $1 из файлов деталей: $2, и ещё $3 сохранены внутри неё. Добавьте файлы деталей или перетащите всю папку — каждая деталь встанет на своё место.',
   ],
   [
+    /^This assembly places (\d+) part occurrence\(s\) from (\d+) part file\(s\), and (\d+) more saved inside it; (\d+) of them are drawn from the graphics SolidWorks saved in the assembly until their files are added\. Add the part files — or drop the whole folder — for their exact geometry\.$/,
+    'Сборка ставит вхождений деталей: $1 из файлов деталей: $2, и ещё $3 сохранены внутри неё; $4 из них нарисованы по графике, которую SolidWorks сохранил в сборке, — пока не добавлены их файлы. Добавьте файлы деталей или перетащите всю папку, чтобы увидеть точную геометрию.',
+  ],
+  [
+    /^This assembly places (\d+) part occurrence\(s\) from (\d+) part file\(s\); (\d+) of them are drawn from the graphics SolidWorks saved in the assembly until their files are added\. Add the part files — or drop the whole folder — for their exact geometry\.$/,
+    'Сборка ставит вхождений деталей: $1 из файлов деталей: $2; $3 из них нарисованы по графике, которую SolidWorks сохранил в сборке, — пока не добавлены их файлы. Добавьте файлы деталей или перетащите всю папку, чтобы увидеть точную геометрию.',
+  ],
+  [
     /^This assembly places (\d+) part occurrence\(s\) from (\d+) part file\(s\)\. Add the part files — or drop the whole folder — and each part appears where it belongs\.$/,
     'Сборка ставит вхождений деталей: $1 из файлов деталей: $2. Добавьте файлы деталей или перетащите всю папку — каждая деталь встанет на своё место.',
   ],

@@ -92,6 +92,7 @@ export function ComponentsPanel({
   occurrences,
   placed,
   placementsTotal,
+  stored = 0,
   onAdd,
   rejected,
   onDismissRejected,
@@ -105,6 +106,8 @@ export function ComponentsPanel({
   /** Occurrences of parts in their own files now standing in the scene. */
   placed: number;
   placementsTotal: number;
+  /** Occurrences drawn from the graphics kept in the assembly, their files not added. */
+  stored?: number;
   onAdd(files: File[]): void;
   rejected: { name: string; message: string } | null;
   onDismissRejected(): void;
@@ -267,6 +270,22 @@ export function ComponentsPanel({
                 ['Расставлено {placed} из {n} вхождения.', 'Расставлено {placed} из {n} вхождений.', 'Расставлено {placed} из {n} вхождений.'],
                 { placed },
               )}
+        </p>
+      )}
+      {stored > 0 && (
+        <p className="mt-1 text-[11px] text-mist-500" data-testid="stored-count">
+          {tp(
+            stored,
+            [
+              'The other one is drawn from the graphics saved in the assembly until its file is added.',
+              '{n} more are drawn from the graphics saved in the assembly until their files are added.',
+            ],
+            [
+              'Ещё {n} нарисовано по графике, сохранённой в сборке, — пока не добавлен файл.',
+              'Ещё {n} нарисованы по графике, сохранённой в сборке, — пока не добавлены файлы.',
+              'Ещё {n} нарисованы по графике, сохранённой в сборке, — пока не добавлены файлы.',
+            ],
+          )}
         </p>
       )}
 
