@@ -232,7 +232,7 @@ public class Script
         }
         DateTime toDay = new DateTime(Year, Month, Day);
         ICalendarDay calendarDay = calendar.GetDayByDate(toDay);
-        if(calendarDay.DayType == DayType.Holyday)
+        if(calendarDay == null || IsNonWorkingDay(calendarDay))
         {
             _dayPeriods[dtHash] = null;
             return null;
@@ -240,6 +240,24 @@ public class Script
         IReadOnlyList<IWorkTimePeriod> workPeriods = calendarDay.WorkTimePeriods;
         _dayPeriods[dtHash] = workPeriods;
         return workPeriods;
+    }
+    
+    //Нерабочий день календаря (праздник, выходной).
+    //Имя значения DayType отличается в разных версиях IPS (Holyday, Holiday...),
+    //поэтому тип дня сравнивается по имени: так скрипт компилируется в любой версии.
+    //День без рабочих периодов тоже считается нерабочим.
+    private bool IsNonWorkingDay(ICalendarDay calendarDay)
+    {
+        string dayType = Convert.ToString(calendarDay.DayType);
+        string[] nonWorkingNames = new string[] { "Holiday", "Holyday", "Weekend", "DayOff", "NonWorking", "NotWorking", "Free", "Rest", "Off" };
+        foreach(string name in nonWorkingNames)
+        {
+            if(string.Equals(dayType, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return IsNullOrEmpty(calendarDay.WorkTimePeriods);
     }
     
     //private Dictionary<int, int> _countWorkMinute = new Dictionary<int, int>();
