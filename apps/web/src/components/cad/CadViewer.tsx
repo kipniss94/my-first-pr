@@ -8,7 +8,9 @@ import { loadMeshFile, loadNmg, mergeModels, placeModels, type MergeSource } fro
 import { CadScene, disposeObject, type LiveMeasure, type SelectionInfo } from '@/lib/cad/scene';
 import type { RenderableComponent } from '@/lib/assembly';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
-import { formatLength } from '@/lib/format';
+import { formatCount, formatLength } from '@/lib/format';
+import { fetchApi } from '@/lib/api';
+import { saveToDisk } from '@/lib/edit';
 import { useT } from '@/lib/prefs';
 import type {
   CadModel,
@@ -22,6 +24,7 @@ import type {
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { AnalysisPanel } from './AnalysisPanel';
+import { ExportMenu, type ExportChoice, type ExportScope } from './ExportMenu';
 import { ModelTree } from './ModelTree';
 import { PropertiesPanel } from './PropertiesPanel';
 import { ViewerToolbar } from './ViewerToolbar';
@@ -374,7 +377,14 @@ export function CadViewer({
       ? { volume: null as number | null, approximate: false, area: 0 }
       : (() => {
           const volume = computeVolume(part.mesh.geometry);
-          return { volume: volume.volume, approximate: volume.approximate, area: computeSurfaceArea(part.mesh.geometry) };
+          // The geometry may be scaled into place (glTF is in metres): volume
+          // grows with the scale's determinant, area (for an even scale) with its square.
+          const factor = Math.abs(part.mesh.matrixWorld.determinant());
+          return {
+            volume: volume.volume * factor,
+            approximate: volume.approximate,
+            area: computeSurfaceArea(part.mesh.geometry) * Math.cbrt(factor) ** 2,
+          };
         })();
 
     return {
@@ -440,6 +450,45 @@ export function CadViewer({
     link.download = 'docuview-snapshot.png';
     link.click();
   }, []);
+
+  const parasolidUrl = typeof meta.parasolidUrl === 'string' ? meta.parasolidUrl : null;
+
+  const onExport = useCallback(
+    async (choice: ExportChoice, scope: ExportScope) => {
+      const base = fileName.replace(/.[^.]+$/, '').trim() || 'model';
+      if (choice === 'parasolid') {
+        if (!parasolidUrl) return;
+        const response = await fetchApi(parasolidUrl);
+        if (!response.ok) throw new Error(t('The exact solid could not be downloaded.'));
+        await saveToDisk(new Blob([await response.arrayBuffer()], { type: 'application/octet-stream' }), `${base}.x_t`);
+        return;
+      }
+      const scene = sceneRef.current;
+      if (!scene || !model) return;
+      const parts =
+        scope === 'selection' && selection.partId
+          ? model.parts.filter((part) => part.id === selection.partId)
+          : model.parts.filter((part) => !scene.hidden.has(part.id));
+      if (parts.length === 0) throw new Error(t('Nothing to save: every part is hidden.'));
+      const { collectMeshes, exportMeshes, EXPORT_EXTENSIONS } = await import('@/lib/cad/export');
+      const meshes = collectMeshes(model, parts, (part) => {
+        const material = (Array.isArray(part.mesh.material) ? part.mesh.material[0] : part.mesh.material) as THREE.MeshStandardMaterial;
+        return scene.baseColor(part.id) ?? material.color ?? new THREE.Color(0.7, 0.7, 0.7);
+      });
+      if (meshes.length === 0) throw new Error(t('Nothing to save: every part is hidden.'));
+      const name = scope === 'selection' ? parts[0].name || base : base;
+      const { blob, simplified } = await exportMeshes(meshes, choice, name);
+      const saved = await saveToDisk(blob, `${name.replace(/[\\/:*?"<>|]+/g, '_')}.${EXPORT_EXTENSIONS[choice]}`);
+      if (saved && simplified) {
+        return t('Saved. For a lighter STEP the mesh was simplified from {from} to {to} triangles, within {tolerance} mm.', {
+          from: formatCount(simplified.from),
+          to: formatCount(simplified.to),
+          tolerance: simplified.tolerance,
+        });
+      }
+    },
+    [fileName, model, parasolidUrl, selection.partId, t],
+  );
 
   const hiddenParts = useMemo(() => {
     void hiddenVersion; // recompute whenever visibility changed
@@ -650,6 +699,11 @@ export function CadViewer({
           onFit={() => sceneRef.current?.fit()}
           onReset={() => sceneRef.current?.resetCamera()}
           onSnapshot={onSnapshot}
+          extra={
+            model ? (
+              <ExportMenu hasSelection={Boolean(selection.partId)} hasParasolid={Boolean(parasolidUrl)} onExport={onExport} />
+            ) : null
+          }
         />
       </div>
 

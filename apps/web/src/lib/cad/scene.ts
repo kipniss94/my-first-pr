@@ -496,6 +496,11 @@ export class CadScene {
     return this.hiddenParts;
   }
 
+  /** The part's own colour, whatever the selection or an override shows now. */
+  baseColor(partId: string): THREE.Color | null {
+    return this.originalColors.get(partId) ?? null;
+  }
+
   /* ------------------------------ selection ------------------------------- */
 
   select(partId: string | null, faceIndex: number | null = null): void {

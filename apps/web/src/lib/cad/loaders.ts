@@ -259,6 +259,8 @@ async function parseMesh(buffer: ArrayBuffer, formatId: string, fileName: string
       const loader = new GLTFLoader();
       const gltf = await loader.parseAsync(buffer, '');
       prepareImportedMaterials(gltf.scene);
+      // glTF is in metres with Y up; the viewer measures in millimetres with Z up.
+      gltf.scene.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI / 2).scale(new THREE.Vector3(1000, 1000, 1000)));
       return gltf.scene;
     }
     case 'fbx': {

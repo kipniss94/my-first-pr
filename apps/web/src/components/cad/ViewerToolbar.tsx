@@ -22,6 +22,8 @@ interface ViewerToolbarProps {
   onFit(): void;
   onReset(): void;
   onSnapshot(): void;
+  /** More commands, shown before the snapshot button (the export menu). */
+  extra?: React.ReactNode;
 }
 
 const VIEWS: { id: StandardView; label: string; short: string }[] = [
@@ -184,6 +186,8 @@ export function ViewerToolbar(props: ViewerToolbarProps) {
         <IconButton label={t('Toggle grid')} active={props.gridVisible} onClick={() => props.onGridToggle(!props.gridVisible)}>
           <path d="M2.5 6h11M2.5 10h11M6 2.5v11M10 2.5v11" stroke="currentColor" strokeWidth="1.3" />
         </IconButton>
+
+        {props.extra}
 
         <IconButton label={t('Save a PNG snapshot')} onClick={props.onSnapshot}>
           <rect x="2.5" y="4.5" width="11" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
