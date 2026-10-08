@@ -351,6 +351,40 @@ DisplayLists (превью); видов 3779 — 3293 из файла, 426 по 
   ширин) — закрывается белым. Страницы удаляются. Проверено на 200 PDF
   чертежей SolidWorks: 999 из 1000 фрагментов вырезаны целиком, соседний
   текст не сдвинут.
+- **Word по страницам** — `components/office/DocxPages.tsx` (docx-preview,
+  `renderAsync` с `breakPages` и `lastRenderedPageBreak`: страницы там, где
+  их разбил Word; `section.docx` — страница). Слева миниатюры (копия
+  страницы, `transform: scale`, рисуется, когда видна), счётчик, масштаб,
+  PageUp/PageDown. В `WordViewer.tsx` переключатель «Страницы / Текст»
+  (`word-view-toggle`); при ошибке docx-preview — прежний текстовый вид.
+- **PowerPoint в браузере** — `components/office/PptxSlides.tsx`
+  (pptx-preview, режим `list`, `load()` + `htmlRender.renderSlide(i)` по
+  одному слайду в try/catch): мастер-слайды, фоны, фигуры, картинки,
+  таблицы, диаграммы. Работает, когда на сервере нет LibreOffice
+  (`mode: 'native'`); `slides.json` сервера — запасной путь
+  (`NativeSlides`). С LibreOffice — как раньше, PDF. Расширения семейства:
+  `.pptm .ppsx .ppsm .potx .potm`, `.docm .dotx .dotm`, `.xltx .xltm`
+  (`formats.ts`; определение по содержимому, макросы не исполняются).
+  `.ppt`/`.odp` по-прежнему только через LibreOffice.
+- **Загрузки больше 10 МБ** обрывались в прокси Next (`rewrites`):
+  `experimental.middlewareClientMaxBodySize` в `next.config.ts` = MAX_UPLOAD_MB + 16.
+- **Экспорт моделей** — `lib/cad/export.ts`, меню `components/cad/ExportMenu.tsx`
+  (кнопка «Экспорт» в нижней панели). Из того, что на экране: вся модель
+  без скрытых деталей или выбранная деталь, в мм, в координатах модели
+  (`collectMeshes`: сварка вершин, зеркальные размещения разворачиваются).
+  STL (двоичный), 3MF (объекты, цвета `basematerials`, мм; fflate из
+  three), OBJ (`v x y z r g b`), PLY (двоичный, цвета вершин), GLB
+  (GLTFExporter, метры, Y вверх). STEP AP214: соседние треугольники одной
+  плоскости (и одной грани CAD) — одна `ADVANCED_FACE` с внутренними
+  контурами (`planarFaces`/`outline`), замкнутая деталь — `MANIFOLD_SOLID_BREP`,
+  с дырами — `SHELL_BASED_SURFACE_MODEL`, несколько деталей — сборка с
+  `NEXT_ASSEMBLY_USAGE_OCCURRENCE`, имена (`\X2\`), цвета (`STYLED_ITEM`).
+  Больше 250 000 треугольников — сетка сначала упрощается meshoptimizer
+  (`three/examples/jsm/libs/meshopt_simplifier.module.js`, допуск 0,01 →
+  0,02 → 0,05 мм): деталь на 1,3 млн треугольников — 212 МБ вместо 1,27 ГБ.
+  Для деталей SolidWorks с точным телом — пункт «Parasolid (.x_t)»
+  (`meta.parasolidUrl`). glTF теперь открывается как по спецификации
+  (метры → мм, Y вверх → Z вверх); объём/площадь детали учитывают масштаб.
 
 ## 5. Ограничения, которые нужно соблюдать
 
@@ -385,3 +419,9 @@ DisplayLists (превью); видов 3779 — 3293 из файла, 426 по 
    знаки сварки, обрезанные виды — сделаны (§4a). Осталось: 349 видов
    картинкой (в основном без корзины своего направления), диагональ
    на виде вала 2705-1315330.
+6. Точный STEP (не из сетки): у деталей SolidWorks точное тело уже
+   читается (`sldprt/brep-mesh.ts`: поверхности и топология Parasolid) —
+   из него можно писать STEP с цилиндрами, конусами, B-сплайнами вместо
+   плоских граней. Сейчас для точной геометрии — пункт «Parasolid (.x_t)».
+7. `.ppt`/`.odp` без LibreOffice: в браузере не читаются (pptx-preview
+   понимает только OOXML).
