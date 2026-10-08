@@ -1,9 +1,19 @@
 import { existsSync } from 'node:fs';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { fixture, openFixture, watchConsole } from './helpers';
+import { slidesSample, wordSample } from './office-samples';
 
 /** The .docx and .pptx fixtures are written by LibreOffice; without it they do not exist. */
 const needs = (name: string) => test.skip(!existsSync(fixture(name)), `${name} is generated with LibreOffice, which is not installed here`);
+
+/** Upload bytes built in the test, the way openFixture uploads a file. */
+async function openBuffer(page: Page, name: string, buffer: Buffer) {
+  await page.goto('/');
+  await page.setInputFiles('[data-testid="file-input"]', { name, mimeType: 'application/octet-stream', buffer });
+  await page.waitForURL(/\/viewer/, { timeout: 20_000 });
+  await expect(page.getByTestId('stage-rail')).toHaveCount(0, { timeout: 60_000 });
+  await expect(page.getByTestId('error-panel')).toHaveCount(0);
+}
 
 test.describe('PDF viewer', () => {
   test('renders pages, navigates and searches', async ({ page }) => {
@@ -74,6 +84,8 @@ test.describe('Office viewers', () => {
     needs('inspection-report.docx');
     const errors = watchConsole(page);
     await openFixture(page, 'inspection-report.docx');
+    // A .docx opens as pages; the reading view is one click away.
+    await page.getByTestId('word-view-toggle').getByRole('button').nth(1).click();
 
     const content = page.getByTestId('word-content');
     await expect(content).toBeVisible();
@@ -88,11 +100,57 @@ test.describe('Office viewers', () => {
   test('the exact page layout can be requested and returns a PDF', async ({ page }) => {
     needs('inspection-report.docx');
     await openFixture(page, 'inspection-report.docx');
+    await page.getByTestId('word-view-toggle').getByRole('button').nth(1).click();
     await page.getByTestId('word-page-layout').click();
 
     await expect(page.locator('[data-page="1"] canvas')).toBeVisible({ timeout: 60_000 });
     await page.getByTestId('page-layout-back').click();
     await expect(page.getByTestId('word-content')).toBeVisible();
+  });
+
+  test('a Word document opens as pages with a rail of thumbnails', async ({ page }) => {
+    const errors = watchConsole(page);
+    await openBuffer(page, 'chapters.docx', await wordSample());
+
+    const pages = page.getByTestId('docx-pages');
+    await expect(pages.locator('section.docx')).toHaveCount(3, { timeout: 30_000 });
+    await expect(pages).toContainText('Chapter 1');
+    await expect(page.getByTestId('docx-page-indicator')).toHaveText('1 / 3');
+    const thumbnails = page.getByTestId('docx-thumbnails').getByRole('button');
+    await expect(thumbnails).toHaveCount(3);
+    // A thumbnail is a copy of its page.
+    await expect(thumbnails.nth(0)).toContainText('Chapter 1');
+
+    await thumbnails.nth(2).click();
+    await expect(page.getByTestId('docx-page-indicator')).toHaveText('3 / 3');
+    await expect(thumbnails.nth(2)).toHaveAttribute('aria-current', 'page');
+
+    // The reading view still reflows the text.
+    await page.getByTestId('word-view-toggle').getByRole('button').nth(1).click();
+    await expect(page.getByTestId('word-content')).toContainText('Text of page 2.');
+    expect(errors).toEqual([]);
+  });
+
+  test('a PowerPoint deck is drawn in the browser, a show file too', async ({ page }) => {
+    const capabilities = await (await page.request.get('/api/v1/capabilities')).json();
+    test.skip(capabilities.libreOffice, 'With LibreOffice the deck is rendered to PDF instead');
+    const errors = watchConsole(page);
+    // .ppsx is the same package, saved to open as a slide show.
+    await openBuffer(page, 'deck.ppsx', await slidesSample());
+
+    const slides = page.getByTestId('pptx-slides');
+    await expect(slides.locator('.pptx-preview-slide-wrapper')).toHaveCount(2, { timeout: 30_000 });
+    await expect(slides).toContainText('Deck drawn in the browser');
+    await expect(page.getByTestId('slide-indicator')).toHaveText('1 / 2');
+    const rail = page.getByTestId('slide-rail').getByRole('button');
+    await expect(rail).toHaveCount(2);
+    await expect(rail.nth(1)).toContainText('Second slide');
+
+    await rail.nth(1).click();
+    await expect(page.getByTestId('slide-indicator')).toHaveText('2 / 2');
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.getByTestId('slide-indicator')).toHaveText('1 / 2');
+    expect(errors).toEqual([]);
   });
 
   test('a workbook shows every sheet with formatted values', async ({ page }) => {

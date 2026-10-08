@@ -463,3 +463,34 @@ body {
   color: transparent;
   border-radius: 2px;
 }
+
+/* Word pages (docx-preview): the pages on the viewer's own surround. */
+.docx-pages .docx-wrapper {
+  background: transparent;
+  padding: 24px 0 0;
+}
+.docx-pages .docx-wrapper > section.docx {
+  box-shadow: 0 1px 20px -8px rgb(0 0 0 / 0.45);
+  margin-bottom: 24px;
+}
+.docx-thumb > section.docx {
+  background: white;
+}
+
+/* PowerPoint slides drawn in the browser (pptx-preview). */
+.pptx-host .pptx-preview-wrapper {
+  background: transparent !important;
+  /* Theme fonts the library cannot resolve fall back to a sans face, as in PowerPoint. */
+  font-family: Calibri, Carlito, Arial, 'Helvetica Neue', sans-serif;
+}
+.pptx-host .pptx-preview-slide-wrapper {
+  margin: 0 auto 24px !important;
+  box-shadow: 0 1px 20px -8px rgb(0 0 0 / 0.45);
+}
+.pptx-host img[data-broken],
+.pptx-thumb img[data-broken] {
+  visibility: hidden;
+}
+.pptx-thumb > .pptx-preview-slide-wrapper {
+  font-family: Calibri, Carlito, Arial, 'Helvetica Neue', sans-serif;
+}

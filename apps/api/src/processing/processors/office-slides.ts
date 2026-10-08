@@ -120,10 +120,12 @@ async function renderNatively(ctx: ProcessorContext): Promise<JobResult> {
       slideCount: document.slides.length,
       outline: document.slides.map((slide) => ({ index: slide.index, title: slide.title, notes: slide.notes })),
       producer: document.producer,
+      // What the simplified reading behind slides.json had to leave out.
+      fallbackWarnings: document.warnings,
     },
-    warnings: [
-      'LibreOffice is not installed on this server, so slides are drawn by a simplified built-in renderer. Text, images and basic shapes are shown; charts, tables and effects are not.',
-      ...document.warnings,
-    ],
+    // The browser draws the deck from the original file (masters, shapes,
+    // tables, charts); slides.json is only what it falls back on, so its
+    // shortcomings are not this view's.
+    warnings: [],
   };
 }

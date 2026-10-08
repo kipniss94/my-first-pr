@@ -16,6 +16,12 @@ const nextConfig: NextConfig = {
   distDir: process.env.NEXT_DIST_DIR ?? '.next',
   reactStrictMode: true,
   poweredByHeader: false,
+  experimental: {
+    // Uploads reach the API through the rewrite below, and Next cuts a
+    // proxied body at 10 MB by default: a 15 MB presentation never arrived.
+    // As large as the API takes, and a little over for the form's own bytes.
+    middlewareClientMaxBodySize: `${Number(process.env.MAX_UPLOAD_MB ?? 250) + 16}mb` as `${number}mb`,
+  },
   async rewrites() {
     if (process.env.NEXT_PUBLIC_API_BASE) return [];
     return [{ source: '/api/v1/:path*', destination: `${apiTarget}/api/v1/:path*` }];

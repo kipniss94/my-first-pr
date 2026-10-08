@@ -7,6 +7,7 @@ import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { NativeSlides } from './NativeSlides';
+import { PptxSlides } from './PptxSlides';
 import { SlidesEditor } from './SlidesEditor';
 import { useT } from '@/lib/prefs';
 
@@ -31,8 +32,9 @@ interface OutlineEntry {
  * With LibreOffice available the deck is rendered to PDF, which keeps the
  * layout the author designed; the outline and speaker notes are still read from
  * the OOXML so the side rail stays useful. Without LibreOffice a built-in
- * renderer draws the slides from the file itself — less faithful, and labelled
- * as such.
+ * the browser draws the deck from the original file with pptx-preview —
+ * masters, layouts, shapes, pictures, tables and charts. Should that fail, the
+ * server's simplified reading of the slides (slides.json) is shown instead.
  */
 export function SlidesViewer({ source, meta, fileId, fileName, onProgress, onReady }: SlidesViewerProps) {
   const { t } = useT();
@@ -47,9 +49,13 @@ export function SlidesViewer({ source, meta, fileId, fileName, onProgress, onRea
   const [notesOpen, setNotesOpen] = useState(false);
   const [document, setDocument] = useState<SlideDocument | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
+  const [richFailed, setRichFailed] = useState(false);
+  const onRichError = useCallback(() => setRichFailed(true), []);
+  // Every PowerPoint Open XML deck (formatId pptx covers shows and templates).
+  const rich = mode === 'native' && Boolean(fileId) && formatId === 'pptx' && !richFailed;
 
   useEffect(() => {
-    if (mode !== 'native') return;
+    if (mode !== 'native' || rich) return;
     let cancelled = false;
     (async () => {
       try {
@@ -71,7 +77,7 @@ export function SlidesViewer({ source, meta, fileId, fileName, onProgress, onRea
     return () => {
       cancelled = true;
     };
-  }, [mode, onReady, source]);
+  }, [mode, onReady, rich, source]);
 
   const onPageChange = useCallback((page: number) => setCurrentPage(page), []);
 
@@ -95,6 +101,22 @@ export function SlidesViewer({ source, meta, fileId, fileName, onProgress, onRea
       }}
     />
   );
+
+  if (rich && fileId) {
+    return (
+      <div className="flex min-h-0 flex-1">
+        <PptxSlides
+          fileId={fileId}
+          outline={outline}
+          onEdit={() => setEditing(true)}
+          editable={editable}
+          onReady={onReady}
+          onError={onRichError}
+        />
+        <ViewerAdRail />
+      </div>
+    );
+  }
 
   if (mode === 'native') {
     if (!document) {
