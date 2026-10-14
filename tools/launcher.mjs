@@ -20,8 +20,10 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,11 +33,30 @@ const stateFile = path.join(logs, 'running.json');
 const stampFile = path.join(root, '.build-stamp');
 const WEB_PORT = 3000;
 const API_PORT = 4000;
+/** Next.js listens here, on loopback only; the gateway in front serves WEB_PORT. */
+const WEB_INTERNAL_PORT = 3001;
 const WEB_URL = `http://127.0.0.1:${WEB_PORT}`;
 const MIN_NODE = [20, 11];
 const isWindows = process.platform === 'win32';
 
 const args = new Set(process.argv.slice(2));
+const argValue = (name) => {
+  const all = process.argv.slice(2);
+  const at = all.indexOf(name);
+  return at >= 0 ? all[at + 1] : undefined;
+};
+
+/**
+ * Who may reach DocuView:
+ *   default   this computer, the local network, and a public internet link
+ *   --lan     this computer and the local network, no internet link
+ *   --local   this computer only
+ * Anything beyond this computer asks for the access code.
+ */
+const SHARE_LAN = !args.has('--local');
+const SHARE_INTERNET = SHARE_LAN && !args.has('--lan');
+const codeFile = path.join(root, '.access-code');
+const toolsBin = path.join(root, 'tools', 'bin');
 
 fs.mkdirSync(logs, { recursive: true });
 
@@ -109,12 +130,12 @@ function killTree(pid) {
   }
 }
 
-function openBrowser() {
+function openBrowser(url = WEB_URL) {
   const [command, argv] = isWindows
-    ? ['rundll32', ['url.dll,FileProtocolHandler', WEB_URL]]
+    ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
     : process.platform === 'darwin'
-      ? ['open', [WEB_URL]]
-      : ['xdg-open', [WEB_URL]];
+      ? ['open', [url]]
+      : ['xdg-open', [url]];
   try {
     spawn(command, argv, { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref();
   } catch {
@@ -180,8 +201,127 @@ function readState() {
 
 function stopAll() {
   const state = readState();
-  if (state) for (const pid of [state.api, state.web]) killTree(pid);
+  if (state) for (const pid of [state.api, state.web, state.gateway, state.tunnel]) killTree(pid);
   fs.rmSync(stateFile, { force: true });
+}
+
+/* ----------------------------------------------------------- sharing ----- */
+
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+/**
+ * The access code: eight characters, kept in .access-code so phones that
+ * signed in once stay signed in across restarts. Delete the file to issue a
+ * new one and sign every device out.
+ */
+function accessCode() {
+  try {
+    const saved = fs.readFileSync(codeFile, 'utf8').trim().toUpperCase();
+    if (/^[A-Z0-9]{8}$/.test(saved)) return saved;
+  } catch {
+    // first run
+  }
+  const code = Array.from({ length: 8 }, () => CODE_ALPHABET[randomInt(CODE_ALPHABET.length)]).join('');
+  fs.writeFileSync(codeFile, code);
+  return code;
+}
+
+const showCode = (code) => `${code.slice(0, 4)}-${code.slice(4)}`;
+
+/** Addresses other devices on the same network can use. */
+function lanAddresses() {
+  const found = [];
+  for (const [name, list] of Object.entries(os.networkInterfaces())) {
+    for (const entry of list ?? []) {
+      if (entry.family !== 'IPv4' || entry.internal || entry.address.startsWith('169.254.')) continue;
+      // Virtual adapters (Hyper-V, WSL, VPN clients) are rarely what a phone can reach.
+      const virtual = /vethernet|wsl|hyper-v|virtualbox|vmware|docker|vpn|tap|tun/i.test(name);
+      found.push({ url: `http://${entry.address}:${WEB_PORT}`, virtual });
+    }
+  }
+  return found.sort((a, b) => Number(a.virtual) - Number(b.virtual)).map((entry) => entry.url);
+}
+
+/** Cloudflare's tunnel client: from PATH, from tools/bin, or downloaded once. */
+async function findCloudflared() {
+  const testBinary = argValue('--tunnel-bin');
+  if (testBinary) return path.resolve(testBinary);
+  const exe = isWindows ? 'cloudflared.exe' : 'cloudflared';
+  const local = path.join(toolsBin, exe);
+  if (fs.existsSync(local)) return local;
+  const which = spawnSync(isWindows ? 'where' : 'which', ['cloudflared'], { encoding: 'utf8', windowsHide: true });
+  const onPath = which.status === 0 ? which.stdout.split(/\r?\n/)[0].trim() : '';
+  if (onPath) return onPath;
+
+  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'amd64' : '386';
+  const asset = isWindows ? `cloudflared-windows-${arch === 'arm64' ? 'amd64' : arch}.exe` : process.platform === 'linux' ? `cloudflared-linux-${arch}` : null;
+  if (!asset) return null;
+  const url = `https://github.com/cloudflare/cloudflared/releases/latest/download/${asset}`;
+  say(`   Скачиваю cloudflared (официальный клиент Cloudflare, один раз, ~60 МБ)...`);
+  say(dim(`   ${url}`));
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(300_000) });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    fs.mkdirSync(toolsBin, { recursive: true });
+    const partial = `${local}.part`;
+    fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(partial, local);
+    if (!isWindows) fs.chmodSync(local, 0o755);
+    return local;
+  } catch (err) {
+    warn(`Не удалось скачать cloudflared: ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
+/**
+ * A public https address for this computer, through a Cloudflare quick tunnel.
+ * No account is needed; the address changes on every start. A fixed address
+ * comes with hosting DocuView on its own server.
+ */
+async function startTunnel() {
+  const binary = await findCloudflared();
+  if (!binary) return null;
+  const tag = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const logPath = path.join(logs, `tunnel-${tag}.log`);
+  const log = fs.createWriteStream(logPath);
+  const [command, argv] = /\.(mjs|js)$/.test(binary)
+    ? [process.execPath, [binary]]
+    : [binary, ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${WEB_PORT}`]];
+  // Shares this window's console, like the servers: closing the window ends it.
+  const child = spawn(command, argv, { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (url) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(url ? { url, pid: child.pid, log: logPath } : null);
+    };
+    const take = (chunk) => {
+      log.write(chunk);
+      const match = /https:\/\/[-a-z0-9]+\.trycloudflare\.com/.exec(chunk.toString('utf8'));
+      if (match) finish(match[0]);
+    };
+    child.stdout.on('data', take);
+    child.stderr.on('data', take);
+    child.on('error', () => finish(null));
+    child.on('exit', () => finish(null));
+    const timer = setTimeout(() => {
+      killTree(child.pid);
+      finish(null);
+    }, 60_000);
+  });
+}
+
+async function printQr(text) {
+  try {
+    const { default: QRCode } = await import('qrcode');
+    const art = await QRCode.toString(text, { type: 'terminal', small: true, errorCorrectionLevel: 'L' });
+    for (const line of art.split('\n')) say(`    ${line}`);
+  } catch {
+    // no QR, the address is printed anyway
+  }
 }
 
 /* ------------------------------------------------------------------- steps */
@@ -270,26 +410,55 @@ async function ensureBuild() {
   ok('Сборка актуальна');
 }
 
+/** Something is listening on the port, whether or not it answers HTTP. */
+function listening(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    const done = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(1500, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+/** The PID of a DocuView gateway still on the port from an earlier run. */
+async function leftoverGateway() {
+  try {
+    const response = await fetch(`${WEB_URL}/__gateway`, { signal: AbortSignal.timeout(3000) });
+    const body = await response.json();
+    return body?.gateway === 'docuview' && Number.isInteger(body.pid) ? body.pid : null;
+  } catch {
+    return null;
+  }
+}
+
 async function freePorts() {
-  const busy = async () => (await answers(`http://127.0.0.1:${API_PORT}/healthz`)) || (await answers(WEB_URL));
+  const busy = async () =>
+    (await listening(API_PORT)) || (await listening(WEB_PORT)) || (await listening(WEB_INTERNAL_PORT));
   if (!(await busy())) return;
   // Left over from an earlier run whose window was closed: ours to stop.
   const state = readState();
-  if (state && (alive(state.api) || alive(state.web))) {
+  const gateway = await leftoverGateway();
+  if ((state && [state.api, state.web, state.gateway, state.tunnel].some(alive)) || gateway) {
     warn('Остался прошлый запуск — останавливаю его.');
     stopAll();
+    if (gateway) killTree(gateway);
     await sleep(1500);
   }
   if (await busy()) {
-    const owner = portOwner(WEB_PORT) ?? portOwner(API_PORT);
+    const owner = portOwner(WEB_PORT) ?? portOwner(API_PORT) ?? portOwner(WEB_INTERNAL_PORT);
+    const ports = `${WEB_PORT}, ${WEB_INTERNAL_PORT} или ${API_PORT}`;
     die(
-      owner ? `Порт ${WEB_PORT} или ${API_PORT} занят: ${owner.name} (PID ${owner.pid}).` : `Порт ${WEB_PORT} или ${API_PORT} занят другой программой.`,
+      owner ? `Порт ${ports} занят: ${owner.name} (PID ${owner.pid}).` : `Порт ${ports} занят другой программой.`,
       ['Закройте её и запустите DocuView снова.'],
     );
   }
 }
 
-async function startServers() {
+async function startServers(code) {
   const env = {
     ...process.env,
     NODE_ENV: 'production',
@@ -309,10 +478,12 @@ async function startServers() {
     // dropped at once would otherwise run into the public-site limit.
     RATE_LIMIT_API: '20000',
     NEXT_TELEMETRY_DISABLED: '1',
+    // Set only when DocuView is reachable from other devices.
+    DOCUVIEW_ACCESS_CODE: code ?? '',
   };
 
   const tag = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-  for (const old of fs.readdirSync(logs).filter((name) => /^(api|web)-\d/.test(name)).sort().slice(0, -10)) {
+  for (const old of fs.readdirSync(logs).filter((name) => /^(api|web|gateway|tunnel)-\d/.test(name)).sort().slice(0, -10)) {
     fs.rmSync(path.join(logs, old), { force: true });
   }
   const apiLog = path.join(logs, `api-${tag}.log`);
@@ -327,18 +498,34 @@ async function startServers() {
   });
   const web = spawn(
     process.execPath,
-    [path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(WEB_PORT), '-H', '127.0.0.1'],
+    [path.join(root, 'node_modules', 'next', 'dist', 'bin', 'next'), 'start', '-p', String(WEB_INTERNAL_PORT), '-H', '127.0.0.1'],
     { cwd: path.join(root, 'apps', 'web'), env, stdio: ['ignore', fs.openSync(webLog, 'a'), fs.openSync(webLog, 'a')] },
   );
 
+  // The front door: /api to the API, the rest to the web app, as plain streams
+  // (Next's own proxy cuts uploads off at 10 MB). Only this one listens beyond
+  // loopback, and only when DocuView is shared.
+  const gatewayLog = path.join(logs, `gateway-${tag}.log`);
+  const gateway = spawn(process.execPath, [path.join(root, 'scripts', 'gateway.mjs')], {
+    cwd: root,
+    env: {
+      ...env,
+      GATEWAY_PORT: String(WEB_PORT),
+      GATEWAY_HOST: SHARE_LAN ? '0.0.0.0' : '127.0.0.1',
+      WEB_INTERNAL_PORT: String(WEB_INTERNAL_PORT),
+    },
+    stdio: ['ignore', fs.openSync(gatewayLog, 'a'), fs.openSync(gatewayLog, 'a')],
+  });
+
   fs.writeFileSync(
     stateFile,
-    JSON.stringify({ api: api.pid, web: web.pid, started: new Date().toISOString() }, null, 2),
+    JSON.stringify({ api: api.pid, web: web.pid, gateway: gateway.pid, started: new Date().toISOString() }, null, 2),
   );
 
   let exited = null;
   api.on('exit', (code) => (exited ??= { name: 'API', code, log: apiLog }));
   web.on('exit', (code) => (exited ??= { name: 'Веб-часть', code, log: webLog }));
+  gateway.on('exit', (code) => (exited ??= { name: 'Шлюз', code, log: gatewayLog }));
 
   const deadline = Date.now() + 180_000;
   let apiUp = false;
@@ -366,6 +553,31 @@ async function startServers() {
   return { api, web, getExited: () => exited };
 }
 
+/** A link that signs the browser in with the code, then opens DocuView. */
+function signInUrl(base, code) {
+  return code ? `${base}/access/verify?code=${code}` : base;
+}
+
+async function printAddresses(code, publicUrl) {
+  const lan = lanAddresses();
+  say(`  На этом компьютере:       ${bold(WEB_URL)}`);
+  if (publicUrl) say(`  С любого устройства:      ${bold(publicUrl)}`);
+  if (lan.length) say(`  В той же сети (Wi-Fi):    ${bold(lan[0])}${lan.length > 1 ? dim(`  (или ${lan.slice(1).join(', ')})`) : ''}`);
+  say(`  Код доступа:              ${bold(showCode(code))}`);
+  const target = publicUrl ?? lan[0];
+  if (target) {
+    say();
+    say(dim('  Наведите камеру телефона на код — DocuView откроется сразу, без ввода кода:'));
+    await printQr(signInUrl(target, code));
+  }
+  if (lan.length && isWindows) {
+    say(dim('  Если Windows спросит про доступ Node.js к сети — нажмите «Разрешить» (частные сети).'));
+  }
+  if (publicUrl) {
+    say(dim('  Публичная ссылка меняется при каждом запуске. Постоянный адрес — при размещении на сервере.'));
+  }
+}
+
 /* -------------------------------------------------------------------- main */
 
 async function main() {
@@ -382,9 +594,11 @@ async function main() {
     return 0;
   }
 
-  if ((await answers(`http://127.0.0.1:${API_PORT}/healthz`)) && (await answers(WEB_URL)) && readState()) {
+  const running = readState();
+  if ((await answers(`http://127.0.0.1:${API_PORT}/healthz`)) && (await answers(WEB_URL)) && running) {
     ok('DocuView уже работает — открываю браузер.');
-    if (!args.has('--no-browser')) openBrowser();
+    if (running.code) await printAddresses(running.code, running.publicUrl ?? null);
+    if (!args.has('--no-browser')) openBrowser(signInUrl(WEB_URL, running.code));
     return 0;
   }
   await freePorts();
@@ -396,14 +610,36 @@ async function main() {
   step('Сборка');
   await ensureBuild();
   step('Запуск');
-  const { getExited } = await startServers();
+  const code = SHARE_LAN ? accessCode() : null;
+  const { getExited } = await startServers(code);
 
-  if (!args.has('--no-browser')) openBrowser();
+  let publicUrl = null;
+  if (SHARE_INTERNET) {
+    step('Ссылка для любого устройства');
+    const tunnel = await startTunnel();
+    if (tunnel) {
+      publicUrl = tunnel.url;
+      ok(publicUrl);
+      const state = readState() ?? {};
+      fs.writeFileSync(stateFile, JSON.stringify({ ...state, tunnel: tunnel.pid, publicUrl, code }, null, 2));
+    } else {
+      warn('Публичная ссылка не создалась (сеть могла заблокировать Cloudflare). Работает доступ по локальной сети.');
+    }
+  }
+  if (code && !publicUrl) {
+    const state = readState() ?? {};
+    fs.writeFileSync(stateFile, JSON.stringify({ ...state, code }, null, 2));
+  }
+
+  if (!args.has('--no-browser')) openBrowser(signInUrl(WEB_URL, code));
 
   say();
   say(green('  ============================================='));
-  say(green(`    DocuView работает:  ${WEB_URL}`));
+  say(green('    DocuView работает'));
   say(green('  ============================================='));
+  if (code) await printAddresses(code, publicUrl);
+  else say(`  Адрес: ${WEB_URL}  (только этот компьютер)`);
+  say();
   say('  Перетащите .SLDPRT, STEP, PDF, DOCX... в окно браузера. CAD для этого не нужен.');
   say();
   say(bold('  O — открыть браузер ещё раз     S — остановить'));

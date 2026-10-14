@@ -3,13 +3,14 @@ services:
     build: .
     image: docuview:stage1
     ports:
-      - '3000:3000' # web app
-      - '4000:4000' # API (only needed if you call it directly)
+      - '3000:3000' # the gateway: web app and API on one port
     environment:
       # Change this to the address people will actually use, so metadata,
       # robots.txt and sitemap.xml point somewhere real.
       NEXT_PUBLIC_SITE_URL: http://localhost:3000
       MAX_UPLOAD_MB: 250
+      # Set to require an access code from every visitor (until real accounts exist).
+      # DOCUVIEW_ACCESS_CODE: CHANGEME1
       RETENTION_MINUTES: 60
       PROCESSING_CONCURRENCY: 2
       # Uncomment once a DWG converter is available inside the image.

@@ -623,6 +623,26 @@ export const RU: Record<string, string> = {
   'Previous slide': 'Предыдущий слайд',
   'Next slide': 'Следующий слайд',
   'Keep this page': 'Оставить страницу',
+  'Access code': 'Код доступа',
+  'Open DocuView': 'Открыть DocuView',
+  'Enter the access code shown in the DocuView window on the computer that runs it.':
+    'Введите код доступа — он показан в окне DocuView на компьютере, где программа запущена.',
+  'That code is not right. It is shown in the DocuView window on the computer running it.':
+    'Код неверный. Он показан в окне DocuView на компьютере, где программа запущена.',
+  'Too many tries. Wait ten minutes and try again.': 'Слишком много попыток. Подождите десять минут и попробуйте снова.',
+  'Deleting pages': 'Удаление страниц',
+  'Delete page': 'Удалить страницу',
+  'Keep page': 'Оставить страницу',
+  'Marked for deletion': 'Будет удалена',
+  'Save as Word…': 'Сохранить Word…',
+  '× on a thumbnail or the Delete key marks a page; Save writes a copy without it.':
+    '× на миниатюре или клавиша Delete отмечает страницу; «Сохранить» создаёт копию без неё.',
+  'Saved without those pages. The original on the server is unchanged.':
+    'Сохранено без этих страниц. Исходный файл на сервере не изменился.',
+  'A document has to keep at least one page.': 'В документе должна остаться хотя бы одна страница.',
+  'No such page in this document.': 'В документе нет такой страницы.',
+  'This is not a Word document.': 'Это не документ Word.',
+  'The document body could not be read.': 'Не удалось прочитать содержимое документа.',
   'Delete this page': 'Удалить страницу',
   'Slide list': 'Список слайдов',
   'Page thumbnails': 'Миниатюры страниц',

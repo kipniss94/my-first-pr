@@ -57,9 +57,27 @@ function retryDelay(header: (name: string) => string | null): number {
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** `fetch` for anything the API serves, waiting out its rate limit. */
+/**
+ * When DocuView is opened to other devices the API asks for the access code.
+ * The answer is the same wherever it surfaces — a page load, an upload, a
+ * viewer fetching its file: go to the code page, then come back here.
+ */
+export function requireAccess(status: number, error: JobError | undefined | null): boolean {
+  if (status !== 401 || error?.code !== 'access_required' || typeof window === 'undefined') return false;
+  if (!window.location.pathname.startsWith('/access')) {
+    const next = window.location.pathname + window.location.search;
+    window.location.assign(`/access?next=${encodeURIComponent(next)}`);
+  }
+  return true;
+}
+
 export async function fetchApi(pathOrUrl: string, init?: RequestInit): Promise<Response> {
   for (let tries = 0; ; tries += 1) {
     const response = await fetch(apiUrl(pathOrUrl), init);
+    if (response.status === 401) {
+      const body = (await response.clone().json().catch(() => null)) as { error?: JobError } | null;
+      requireAccess(401, body?.error);
+    }
     if (response.status !== 429 || tries >= RATE_LIMIT_RETRIES || init?.signal?.aborted) return response;
     await pause(retryDelay((name) => response.headers.get(name)));
   }
@@ -193,6 +211,7 @@ function uploadTo(path: string, file: File, onProgress: (loaded: number, total: 
         continue;
       }
       const error = (outcome.body as { error?: JobError } | null)?.error;
+      requireAccess(outcome.status, error);
       throw new ApiError(
         error ?? { code: `http_${outcome.status}`, message: "We couldn't upload this file.", retryable: true },
         outcome.status,

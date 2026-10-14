@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { config } from './config.js';
 import { logger } from './logger.js';
 import { api, queue } from './routes/api.js';
+import { accessGate } from './access.js';
 
 export function createServer() {
   const app = express();
@@ -66,7 +67,7 @@ export function createServer() {
     });
   });
 
-  app.use('/api/v1', api);
+  app.use('/api/v1', accessGate(), api);
 
   app.use((_req: Request, res: Response) => {
     res.status(404).json({ error: { code: 'not_found', message: 'Unknown endpoint.', retryable: false } });

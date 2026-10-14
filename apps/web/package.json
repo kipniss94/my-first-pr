@@ -7,7 +7,7 @@
     "dev": "next dev -p 3000",
     "prebuild": "node scripts/copy-pdf-worker.mjs",
     "build": "next build",
-    "start": "next start -p 3000",
+    "start": "next start -p 3001 -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test"
   },
@@ -17,6 +17,7 @@
     "@pdf-lib/standard-fonts": "^1.0.0",
     "docx-preview": "^0.4.1",
     "dxf-parser": "^1.1.2",
+    "jszip": "^3.10.2",
     "lucide-react": "^1.34.0",
     "next": "15.5.24",
     "pdf-lib": "^1.17.1",
@@ -33,7 +34,6 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/three": "^0.185.4",
-    "jszip": "^3.10.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3"
   }
