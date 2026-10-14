@@ -31,6 +31,11 @@ export interface Session {
   startedAt: number;
   /** Entry in the local cache, so the viewer can attach a thumbnail to it. */
   docId: string | null;
+  /**
+   * Where the file was inside what was dropped ("Project/v2/Top.SLDASM"), when
+   * it came from a folder: an assembly's parts are looked for beside it.
+   */
+  sourcePath: string | null;
 }
 
 /**
@@ -44,9 +49,94 @@ const pollers = new Map<string, ReturnType<typeof setTimeout>>();
 const listeners = new Set<() => void>();
 
 const POLL_INTERVAL_MS = 250;
+/**
+ * Files sent at once. Many dropped together would otherwise all share the
+ * bandwidth and every one of them would finish last; in turn, the first ones
+ * are on screen while the rest are still on their way.
+ */
+const PARALLEL_UPLOADS = 2;
+
+/** Every open document, oldest first — the viewer's tabs. Rebuilt on change. */
+let list: Session[] = [];
 
 function emit(): void {
+  list = [...sessions.values()].sort((a, b) => a.startedAt - b.startedAt);
+  rememberTabs();
   for (const listener of listeners) listener();
+}
+
+/* ------------------------------ tabs on reload ------------------------------ */
+
+/*
+ * The open documents survive a reload of the page: each is only a job on the
+ * server, so the tab keeps the job ids (sessionStorage — this browser tab
+ * only) and reattaches to them. A job that has expired simply drops out.
+ */
+const TABS_KEY = 'docuview.tabs';
+
+interface RememberedTab {
+  jobId: string;
+  fileName: string;
+  docId: string | null;
+  sourcePath: string | null;
+}
+
+let rememberedSignature = '';
+
+function rememberTabs(): void {
+  const tabs: RememberedTab[] = list
+    .filter((session) => session.jobId && session.phase !== 'cancelled')
+    .map((session) => ({
+      jobId: session.jobId as string,
+      fileName: session.fileName,
+      docId: session.docId,
+      sourcePath: session.sourcePath,
+    }));
+  const signature = JSON.stringify(tabs);
+  if (signature === rememberedSignature) return;
+  rememberedSignature = signature;
+  try {
+    window.sessionStorage.setItem(TABS_KEY, signature);
+  } catch {
+    /* private window or storage off: tabs just do not survive a reload */
+  }
+}
+
+/** Reattach to the documents this browser tab had open before a reload. */
+export function restoreTabs(): void {
+  let tabs: RememberedTab[] = [];
+  try {
+    tabs = JSON.parse(window.sessionStorage.getItem(TABS_KEY) ?? '[]') as RememberedTab[];
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  tabs.forEach((tab, index) => {
+    if (!tab?.jobId) return;
+    attachToJob(tab.jobId, {
+      fileName: tab.fileName,
+      docId: tab.docId,
+      sourcePath: tab.sourcePath,
+      startedAt: now - (tabs.length - index),
+      dropIfExpired: true,
+    });
+  });
+}
+
+let sending = 0;
+const waiting: (() => void)[] = [];
+
+/** Waits for a free upload slot; call the returned function to give it back. */
+async function uploadSlot(): Promise<() => void> {
+  if (sending >= PARALLEL_UPLOADS) await new Promise<void>((resolve) => waiting.push(resolve));
+  sending += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    sending -= 1;
+    waiting.shift()?.();
+  };
 }
 
 function update(id: string, patch: Partial<Session>): void {
@@ -78,6 +168,57 @@ export function useSession(id: string | null): Session | null {
   );
 }
 
+/** Every document open in this tab, oldest first. */
+export function allSessions(): Session[] {
+  return list;
+}
+
+const NO_SESSIONS: Session[] = [];
+
+/** Every document open in this tab, oldest first. */
+export function useSessions(): Session[] {
+  return useSyncExternalStore(
+    subscribe,
+    () => list,
+    () => NO_SESSIONS,
+  );
+}
+
+/** Resolves once the document has opened, failed or been cancelled. */
+export function whenSettled(id: string): Promise<Session | null> {
+  return new Promise((resolve) => {
+    const check = (): boolean => {
+      const session = sessions.get(id);
+      if (!session || session.phase === 'ready' || session.phase === 'error' || session.phase === 'cancelled') {
+        resolve(session ?? null);
+        return true;
+      }
+      return false;
+    };
+    if (check()) return;
+    const stop = subscribe(() => {
+      if (check()) stop();
+    });
+  });
+}
+
+/**
+ * Fetch the job again for a document that is already open.
+ *
+ * Polling stops when a document is ready, but an assembly keeps changing after
+ * that — components arrive — and a tab coming back into view must show them.
+ */
+export async function refreshSession(id: string): Promise<void> {
+  const session = sessions.get(id);
+  if (!session?.jobId || session.phase !== 'ready') return;
+  try {
+    const job = await getJob(session.jobId);
+    if (sessions.get(id)?.phase === 'ready') update(id, { job });
+  } catch {
+    /* Expired: what is on screen stays as it is. */
+  }
+}
+
 /* ------------------------------- lifecycle -------------------------------- */
 
 /**
@@ -86,7 +227,7 @@ export function useSession(id: string | null): Session | null {
  * `docId` is supplied when the bytes came from the cache already, so reopening
  * a document updates its card rather than creating a second one.
  */
-export function startUpload(file: File, docId = newDocumentId()): string {
+export function startUpload(file: File, docId = newDocumentId(), sourcePath: string | null = null): string {
   const id = newId();
   sessions.set(id, {
     id,
@@ -102,12 +243,23 @@ export function startUpload(file: File, docId = newDocumentId()): string {
     error: null,
     startedAt: Date.now(),
     docId,
+    sourcePath,
   });
   emit();
   // Remember the file before anything can go wrong with it: an upload that
   // fails still leaves a card the user can retry from.
   void rememberDocument(docId, file);
 
+  void send(id, file);
+  return id;
+}
+
+async function send(id: string, file: File): Promise<void> {
+  const release = await uploadSlot();
+  if (sessions.get(id)?.phase !== 'uploading') {
+    release();
+    return;
+  }
   const handle = uploadFile(file, (loaded, total) => {
     update(id, { uploadedBytes: loaded, progress: total > 0 ? Math.round((loaded / total) * 100) : -1 });
   });
@@ -115,6 +267,7 @@ export function startUpload(file: File, docId = newDocumentId()): string {
 
   handle.promise.then(
     (response) => {
+      release();
       uploads.delete(id);
       const session = sessions.get(id);
       if (!session || session.phase === 'cancelled') return;
@@ -130,6 +283,7 @@ export function startUpload(file: File, docId = newDocumentId()): string {
       poll(id, response.jobId);
     },
     (err: unknown) => {
+      release();
       uploads.delete(id);
       const session = sessions.get(id);
       if (!session || session.phase === 'cancelled') return;
@@ -140,19 +294,27 @@ export function startUpload(file: File, docId = newDocumentId()): string {
       update(id, { phase: info.code === 'cancelled' ? 'cancelled' : 'error', error: info });
     },
   );
-
-  return id;
 }
 
 /** Rebuild a session for a job that already exists (page reload, shared link). */
-export function attachToJob(jobId: string): string {
+export function attachToJob(
+  jobId: string,
+  known: {
+    fileName?: string;
+    docId?: string | null;
+    sourcePath?: string | null;
+    startedAt?: number;
+    /** A background tab whose job has gone is closed rather than shown failed. */
+    dropIfExpired?: boolean;
+  } = {},
+): string {
   for (const session of sessions.values()) {
     if (session.jobId === jobId) return session.id;
   }
   const id = newId();
   sessions.set(id, {
     id,
-    fileName: 'Document',
+    fileName: known.fileName || 'Document',
     fileSize: 0,
     phase: 'processing',
     stage: 'detecting',
@@ -162,13 +324,18 @@ export function attachToJob(jobId: string): string {
     fileId: null,
     job: null,
     error: null,
-    startedAt: Date.now(),
-    docId: null,
+    startedAt: known.startedAt ?? Date.now(),
+    docId: known.docId ?? null,
+    sourcePath: known.sourcePath ?? null,
   });
   emit();
+  if (known.dropIfExpired) expiring.add(id);
   poll(id, jobId);
   return id;
 }
+
+/** Restored tabs to close quietly if their job is gone. */
+const expiring = new Set<string>();
 
 function poll(id: string, jobId: string): void {
   const existing = pollers.get(id);
@@ -182,6 +349,11 @@ function poll(id: string, jobId: string): void {
     try {
       job = await getJob(jobId);
     } catch (err) {
+      if (expiring.has(id) && err instanceof ApiError && err.status === 404) {
+        expiring.delete(id);
+        forgetSession(id);
+        return;
+      }
       const info =
         err instanceof ApiError
           ? err.info
@@ -189,6 +361,7 @@ function poll(id: string, jobId: string): void {
       update(id, { phase: 'error', error: info });
       return;
     }
+    expiring.delete(id);
 
     const patch: Partial<Session> = {
       job,
@@ -219,7 +392,10 @@ function poll(id: string, jobId: string): void {
     }
 
     update(id, patch);
-    pollers.set(id, setTimeout(tick, POLL_INTERVAL_MS));
+    // Many documents in preparation at once share the server: each one asks
+    // less often, so together they ask about as often as a few would.
+    const preparing = [...sessions.values()].filter((s) => s.phase === 'processing').length;
+    pollers.set(id, setTimeout(tick, POLL_INTERVAL_MS * Math.max(1, Math.ceil(preparing / 4))));
   };
 
   pollers.set(id, setTimeout(tick, 0));
@@ -275,6 +451,7 @@ export async function openCachedDocument(document: CachedDocument): Promise<stri
           error: null,
           startedAt: Date.now(),
           docId: document.id,
+          sourcePath: null,
         });
         emit();
         void touchDocument(document.id);
@@ -318,7 +495,15 @@ export function forgetSession(id: string): void {
   const poller = pollers.get(id);
   if (poller) clearTimeout(poller);
   pollers.delete(id);
+  // A file still being sent is stopped; its slot is handed on by the upload's
+  // own failure handler.
+  uploads.get(id)?.abort();
   uploads.delete(id);
   sessions.delete(id);
   emit();
 }
+
+// Whatever page the store first loads on — the workspace included — the
+// documents this browser tab had open come back, so a new one joins them
+// rather than replacing their memory.
+if (typeof window !== 'undefined') restoreTabs();

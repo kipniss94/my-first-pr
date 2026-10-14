@@ -22,6 +22,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomInt } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -336,8 +337,8 @@ function checkNode() {
 }
 
 async function ensureDependencies() {
-  const lock = fs.readFileSync(path.join(root, 'package-lock.json'));
-  const hash = createHash('sha256').update(lock).digest('hex');
+  const lockHash = () => createHash('sha256').update(fs.readFileSync(path.join(root, 'package-lock.json'))).digest('hex');
+  const hash = lockHash();
   const hashFile = path.join(root, 'node_modules', '.docuview-lock-hash');
   const current =
     fs.existsSync(path.join(root, 'node_modules', '.package-lock.json')) &&
@@ -351,7 +352,10 @@ async function ensureDependencies() {
         'Если повторяется — удалите папку node_modules и запустите снова.',
       ]);
     }
-    fs.writeFileSync(hashFile, hash);
+    // Taken again after the install, like the build stamp: a newer npm rewrites
+    // package-lock.json as it installs, and the hash from before would make the
+    // next start install everything again.
+    fs.writeFileSync(hashFile, lockHash());
   }
   ok('Зависимости на месте');
 }
@@ -406,23 +410,49 @@ async function ensureBuild() {
   ok('Сборка актуальна');
 }
 
+/** Something is listening on the port, whether or not it answers HTTP. */
+function listening(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port });
+    const done = (result) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(1500, () => done(false));
+    socket.once('connect', () => done(true));
+    socket.once('error', () => done(false));
+  });
+}
+
+/** The PID of a DocuView gateway still on the port from an earlier run. */
+async function leftoverGateway() {
+  try {
+    const response = await fetch(`${WEB_URL}/__gateway`, { signal: AbortSignal.timeout(3000) });
+    const body = await response.json();
+    return body?.gateway === 'docuview' && Number.isInteger(body.pid) ? body.pid : null;
+  } catch {
+    return null;
+  }
+}
+
 async function freePorts() {
   const busy = async () =>
-    (await answers(`http://127.0.0.1:${API_PORT}/healthz`)) ||
-    (await answers(WEB_URL)) ||
-    (await answers(`http://127.0.0.1:${WEB_INTERNAL_PORT}`));
+    (await listening(API_PORT)) || (await listening(WEB_PORT)) || (await listening(WEB_INTERNAL_PORT));
   if (!(await busy())) return;
   // Left over from an earlier run whose window was closed: ours to stop.
   const state = readState();
-  if (state && (alive(state.api) || alive(state.web))) {
+  const gateway = await leftoverGateway();
+  if ((state && [state.api, state.web, state.gateway, state.tunnel].some(alive)) || gateway) {
     warn('Остался прошлый запуск — останавливаю его.');
     stopAll();
+    if (gateway) killTree(gateway);
     await sleep(1500);
   }
   if (await busy()) {
-    const owner = portOwner(WEB_PORT) ?? portOwner(API_PORT);
+    const owner = portOwner(WEB_PORT) ?? portOwner(API_PORT) ?? portOwner(WEB_INTERNAL_PORT);
+    const ports = `${WEB_PORT}, ${WEB_INTERNAL_PORT} или ${API_PORT}`;
     die(
-      owner ? `Порт ${WEB_PORT} или ${API_PORT} занят: ${owner.name} (PID ${owner.pid}).` : `Порт ${WEB_PORT} или ${API_PORT} занят другой программой.`,
+      owner ? `Порт ${ports} занят: ${owner.name} (PID ${owner.pid}).` : `Порт ${ports} занят другой программой.`,
       ['Закройте её и запустите DocuView снова.'],
     );
   }
@@ -440,8 +470,13 @@ async function startServers(code) {
     // A local, single-user tool: keep documents for a week, not an hour.
     RETENTION_MINUTES: '10080',
     PROCESSING_TIMEOUT_SECONDS: '600',
-    // Dropping a folder of parts at once is normal here. Still a limit.
-    RATE_LIMIT_UPLOADS: '120',
+    // Dropping a folder of hundreds of parts at once is normal here, and the
+    // only client is this computer's own browser. The browser also waits and
+    // retries when refused, so this only decides how fast a big folder goes.
+    RATE_LIMIT_UPLOADS: '5000',
+    // Every open tab polls its document while it is prepared; a hundred
+    // dropped at once would otherwise run into the public-site limit.
+    RATE_LIMIT_API: '20000',
     NEXT_TELEMETRY_DISABLED: '1',
     // Set only when DocuView is reachable from other devices.
     DOCUVIEW_ACCESS_CODE: code ?? '',

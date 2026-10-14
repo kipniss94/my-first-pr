@@ -1,10 +1,33 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { decimal, formatAngle, formatArea, formatLength } from '@/lib/format';
+import { currentThemeName, onThemeChange, translate, type Theme } from '@/lib/prefs';
 import { captureCanvas } from '@/lib/thumbnail';
-import { findEdgeAtPoint, faceIndexForTriangle, snapToVertex } from './geometry';
+import { faceIndexForTriangle, snapToVertex } from './geometry';
+import {
+  describe,
+  edgeLocalPoints,
+  entityAt,
+  faceTriangleList,
+  measureOptions,
+  sameEntity,
+  type Entity,
+  type MeasureOption,
+  type OptionKind,
+} from './measure';
 import { SectionController } from './section';
 import type { CadModel, CadPart, DisplayMode, MeasurementRecord, StandardView, ToolMode } from './types';
+
+/** What the smart measuring tool has picked and offers, for the panel above the view. */
+export interface LiveMeasure {
+  selection: ReturnType<typeof describe>[];
+  options: { key: string; label: string; kind: OptionKind; value: number; text: string }[];
+  index: number;
+}
 
 export interface SelectionInfo {
   partId: string | null;
@@ -17,12 +40,21 @@ export interface SceneCallbacks {
   onSelectionChange?(selection: SelectionInfo): void;
   onMeasurementsChange?(measurements: MeasurementRecord[]): void;
   onPendingPointsChange?(count: number): void;
+  onLiveMeasureChange?(live: LiveMeasure | null): void;
   onFps?(fps: number): void;
 }
+
+const HOVER_COLOR = 0x3fb6ff;
+const PICKED_COLOR = 0xff8a3d;
 
 const SELECT_COLOR = new THREE.Color(0xff8a3d);
 const EDGE_COLOR = new THREE.Color(0x2a3444);
 const MEASURE_COLOR = 0xf5a524;
+/** Background and ground grid, per interface theme. */
+const PALETTES: Record<Theme, { background: number; gridMajor: number; gridMinor: number }> = {
+  dark: { background: 0x0e131b, gridMajor: 0x33405a, gridMinor: 0x1d2534 },
+  light: { background: 0xe6eaf0, gridMajor: 0x98a4b6, gridMinor: 0xc4ccd7 },
+};
 /** Building edge geometry for a huge mesh freezes the tab; skip it instead. */
 const EDGE_TRIANGLE_LIMIT = 400_000;
 
@@ -58,9 +90,28 @@ export class CadScene {
   private pendingMarkers: THREE.Object3D[] = [];
   private measurements: MeasurementRecord[] = [];
 
+  /* The smart tool: what is under the cursor, what is picked, and the dimension it offers. */
+  private hoverEntity: Entity | null = null;
+  private hoverObject: THREE.Object3D | null = null;
+  private picked: Entity[] = [];
+  private pickedObjects: THREE.Object3D[] = [];
+  private liveOptions: MeasureOption[] = [];
+  private liveIndex = 0;
+  private liveGroup: THREE.Group | null = null;
+  private hoverFrame = 0;
+  private hoverEvent: PointerEvent | null = null;
+  /** Fat-line materials, which need the canvas size to draw their width. */
+  private readonly lineMaterials = new Set<LineMaterial>();
+
   private displayMode: DisplayMode = 'shaded';
   private opacity = 1;
   private colorOverride: string | null = null;
+
+  private palette = PALETTES[currentThemeName()];
+  private readonly stopThemeWatch: () => void;
+  /** Where the ground grid sits and how big it is, to rebuild it in another colour. */
+  private gridSpan = 10;
+  private gridCentre = new THREE.Vector3();
 
   private dirty = true;
   private disposed = false;
@@ -84,7 +135,7 @@ export class CadScene {
       powerPreference: 'high-performance',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.setClearColor(0x0e131b, 1);
+    this.renderer.setClearColor(this.palette.background, 1);
     // Local clipping (not global) so the section cap can stay unclipped.
     this.renderer.localClippingEnabled = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -114,9 +165,10 @@ export class CadScene {
 
     this.setupEnvironment();
 
-    this.grid = new THREE.GridHelper(10, 10, 0x33405a, 0x1d2534);
+    this.grid = new THREE.GridHelper(10, 10, this.palette.gridMajor, this.palette.gridMinor);
     this.grid.visible = false;
     this.scene.add(this.grid);
+    this.stopThemeWatch = onThemeChange((theme) => this.setTheme(theme));
 
     this.annotations.name = 'annotations';
     this.scene.add(this.annotations);
@@ -125,6 +177,10 @@ export class CadScene {
 
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.addEventListener('pointermove', this.onPointerMove);
+    this.renderer.domElement.addEventListener('pointerleave', this.onPointerLeave);
+    // Captured before the orbit controls see it: Shift+wheel switches the dimension instead of zooming.
+    container.addEventListener('wheel', this.onWheel, { capture: true, passive: false });
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(container);
@@ -133,6 +189,32 @@ export class CadScene {
   }
 
   /* ------------------------------ environment ----------------------------- */
+
+  /** Repaint the background and the grid for the interface theme. */
+  setTheme(theme: Theme): void {
+    this.palette = PALETTES[theme];
+    this.renderer.setClearColor(this.palette.background, 1);
+    this.rebuildGrid();
+    this.requestRender();
+  }
+
+  /** The CAD convention here is Z-up, so the grid is rotated into the XY plane. */
+  private rebuildGrid(): void {
+    const wasVisible = this.grid.visible;
+    this.grid.removeFromParent();
+    this.grid.geometry.dispose();
+    (this.grid.material as THREE.Material).dispose();
+    const grid = new THREE.GridHelper(this.gridSpan, 20, this.palette.gridMajor, this.palette.gridMinor);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.copy(this.gridCentre);
+    const gridMaterial = grid.material as THREE.Material;
+    gridMaterial.transparent = true;
+    gridMaterial.opacity = 0.35;
+    gridMaterial.depthWrite = false;
+    grid.visible = wasVisible;
+    this.scene.add(grid);
+    this.grid = grid;
+  }
 
   private setupEnvironment(): void {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
@@ -187,24 +269,13 @@ export class CadScene {
     this.camera.updateProjectionMatrix();
 
     // Rebuild the ground grid at the model's scale and sit it under the part.
-    // The CAD convention here is Z-up, so the grid is rotated into the XY plane.
-    const wasVisible = this.grid.visible;
-    this.grid.removeFromParent();
-    this.grid.geometry.dispose();
-    const grid = new THREE.GridHelper(span * 4, 20, 0x33405a, 0x1d2534);
-    grid.rotation.x = Math.PI / 2;
-    grid.position.set(
+    this.gridSpan = span * 4;
+    this.gridCentre.set(
       (this.bounds.min.x + this.bounds.max.x) / 2,
       (this.bounds.min.y + this.bounds.max.y) / 2,
       this.bounds.min.z,
     );
-    const gridMaterial = grid.material as THREE.Material;
-    gridMaterial.transparent = true;
-    gridMaterial.opacity = 0.35;
-    gridMaterial.depthWrite = false;
-    grid.visible = wasVisible;
-    this.scene.add(grid);
-    this.grid = grid;
+    this.rebuildGrid();
 
     this.section.setModel(model.parts, this.bounds);
     this.applyDisplayMode();
@@ -213,6 +284,8 @@ export class CadScene {
   }
 
   private clearModel(dispose = true): void {
+    this.clearPicked();
+    this.setHover(null);
     this.clearMeasurements();
     this.clearSelection();
     this.section.clear();
@@ -363,9 +436,12 @@ export class CadScene {
         standard.depthWrite = this.opacity >= 1;
         if ('color' in standard) {
           const base = this.originalColors.get(part.id);
-          if (this.selectedPartId === part.id) standard.color.copy(SELECT_COLOR);
+          const selected = this.selectedPartId === part.id;
+          if (selected) standard.color.copy(SELECT_COLOR);
           else if (this.colorOverride) standard.color.set(this.colorOverride);
           else if (base) standard.color.copy(base);
+          // Faces coloured one by one: their colours, unless one colour stands for the whole part.
+          standard.vertexColors = Boolean(part.mesh.geometry.getAttribute('color')) && !selected && !this.colorOverride;
         }
         standard.needsUpdate = true;
       }
@@ -418,6 +494,11 @@ export class CadScene {
 
   get hidden(): ReadonlySet<string> {
     return this.hiddenParts;
+  }
+
+  /** The part's own colour, whatever the selection or an override shows now. */
+  baseColor(partId: string): THREE.Color | null {
+    return this.originalColors.get(partId) ?? null;
   }
 
   /* ------------------------------ selection ------------------------------- */
@@ -527,8 +608,13 @@ export class CadScene {
   /* -------------------------------- tools --------------------------------- */
 
   setTool(tool: ToolMode): void {
+    if (this.tool === 'measure' && tool !== 'measure') {
+      this.clearPicked();
+      this.setHover(null);
+    }
     this.tool = tool;
     this.clearPending();
+    this.renderer.domElement.style.cursor = tool === 'select' ? '' : 'crosshair';
     this.requestRender();
   }
 
@@ -599,12 +685,12 @@ export class CadScene {
       return;
     }
 
-    if (!hit) return;
-
-    if (this.tool === 'measure-length') {
-      this.measureEdge(hit);
+    if (this.tool === 'measure') {
+      this.measureClick(event);
       return;
     }
+
+    if (!hit) return;
 
     // Distance and angle collect points.
     const local = hit.part.mesh.worldToLocal(hit.point.clone());
@@ -651,31 +737,367 @@ export class CadScene {
 
   /* ----------------------------- measurements ----------------------------- */
 
-  private measureEdge(hit: { part: CadPart; point: THREE.Vector3 }): void {
-    const local = hit.part.mesh.worldToLocal(hit.point.clone());
-    const edge = findEdgeAtPoint(hit.part.mesh.geometry, local);
-    if (!edge) {
-      // Too dense to index; say nothing rather than report a wrong number.
+  /* ---------------------------- smart measuring ---------------------------- */
+
+  /** The face, edge or vertex under a pointer position, or null over the background. */
+  private entityUnder(event: { clientX: number; clientY: number }): Entity | null {
+    const hit = this.pick(event as PointerEvent);
+    if (!hit || hit.faceIndex === null) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const projected = new THREE.Vector3();
+    const toScreen = (world: THREE.Vector3) => {
+      projected.copy(world).project(this.camera);
+      return { x: ((projected.x + 1) / 2) * rect.width, y: ((1 - projected.y) / 2) * rect.height };
+    };
+    return entityAt(hit.part, hit.faceIndex, pointer, toScreen);
+  }
+
+  private onPointerMove = (event: PointerEvent): void => {
+    if (this.tool !== 'measure' || event.buttons !== 0) return;
+    this.hoverEvent = event;
+    if (this.hoverFrame) return;
+    this.hoverFrame = requestAnimationFrame(() => {
+      this.hoverFrame = 0;
+      const pending = this.hoverEvent;
+      if (!pending || this.tool !== 'measure' || !this.model) return;
+      const entity = this.entityUnder(pending);
+      if (entity && this.picked.some((picked) => sameEntity(picked, entity))) this.setHover(null);
+      else if (!(entity && this.hoverEntity && sameEntity(entity, this.hoverEntity))) this.setHover(entity);
+    });
+  };
+
+  private onPointerLeave = (): void => {
+    this.hoverEvent = null;
+    this.setHover(null);
+  };
+
+  /** Shift+wheel anywhere over the view, or the wheel over the dimension's label: the next variant. */
+  private onWheel = (event: WheelEvent): void => {
+    if (this.tool !== 'measure' || this.liveOptions.length < 2 || !event.shiftKey) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const delta = event.deltaY || event.deltaX;
+    if (delta !== 0) this.cycleMeasure(delta > 0 ? 1 : -1);
+  };
+
+  private setHover(entity: Entity | null): void {
+    if (this.hoverObject) this.removeHighlight(this.hoverObject);
+    this.hoverObject = null;
+    this.hoverEntity = entity;
+    if (entity) this.hoverObject = this.highlight(entity, HOVER_COLOR);
+    this.requestRender();
+  }
+
+  private measureClick(event: PointerEvent): void {
+    const entity = this.entityUnder(event);
+    if (!entity) {
+      // A click on nothing keeps what was measured and starts afresh.
+      this.commitMeasure();
+      this.clearPicked();
       return;
     }
-    const start = hit.part.mesh.localToWorld(edge.start.clone());
-    const end = hit.part.mesh.localToWorld(edge.end.clone());
-    const length = start.distanceTo(end);
+    const already = this.picked.findIndex((picked) => sameEntity(picked, entity));
+    if (already >= 0) {
+      this.picked.splice(already, 1);
+      this.removeHighlight(this.pickedObjects.splice(already, 1)[0]);
+      this.refreshLive();
+      return;
+    }
+    if (this.picked.length >= 2) {
+      this.commitMeasure();
+      this.clearPicked();
+    }
+    this.setHover(null);
+    this.picked.push(entity);
+    this.pickedObjects.push(this.highlight(entity, PICKED_COLOR));
+    this.refreshLive();
+  }
 
-    const group = this.createAnnotation();
-    group.add(this.createLine([start, end]));
-    group.add(this.createPointMarker(start), this.createPointMarker(end));
-    group.add(this.createLabel(midpoint(start, end), formatValue(length, this.units)));
+  /** Recompute the dimensions the picked entities offer; keep the chosen kind when it still applies. */
+  private refreshLive(): void {
+    const keep = this.liveOptions[this.liveIndex]?.key;
+    this.removeLive();
+    const view = new THREE.Vector3().subVectors(this.controls.target, this.camera.position).normalize();
+    const span = this.bounds.getSize(new THREE.Vector3()).length() || 1;
+    this.liveOptions = this.picked.length > 0 ? measureOptions(this.picked, view, span) : [];
+    const kept = keep ? this.liveOptions.findIndex((option) => option.key === keep) : -1;
+    this.liveIndex = kept >= 0 ? kept : 0;
+    this.drawLive();
+  }
 
+  private drawLive(): void {
+    this.removeLive();
+    const option = this.liveOptions[this.liveIndex];
+    if (option) this.liveGroup = this.drawDimension(option, true);
+    this.emitLive();
+    this.requestRender();
+  }
+
+  private removeLive(): void {
+    if (!this.liveGroup) return;
+    this.removeHighlight(this.liveGroup);
+    this.liveGroup = null;
+  }
+
+  private emitLive(): void {
+    if (this.picked.length === 0) {
+      this.callbacks.onLiveMeasureChange?.(this.tool === 'measure' ? { selection: [], options: [], index: 0 } : null);
+      return;
+    }
+    this.callbacks.onLiveMeasureChange?.({
+      selection: this.picked.map(describe),
+      options: this.liveOptions.map((option) => ({
+        key: option.key,
+        label: option.label,
+        kind: option.kind,
+        value: option.value,
+        text: this.optionText(option),
+      })),
+      index: this.liveIndex,
+    });
+  }
+
+  /** The next (or previous) dimension the picked entities offer. */
+  cycleMeasure(step: number): void {
+    const count = this.liveOptions.length;
+    if (count < 2) return;
+    this.liveIndex = (((this.liveIndex + step) % count) + count) % count;
+    this.drawLive();
+  }
+
+  chooseMeasure(index: number): void {
+    if (index < 0 || index >= this.liveOptions.length) return;
+    this.liveIndex = index;
+    this.drawLive();
+  }
+
+  /** Keep the dimension on screen and in the list. */
+  commitMeasure(): boolean {
+    const option = this.liveOptions[this.liveIndex];
+    if (!option) return false;
+    this.removeLive();
+    const group = this.drawDimension(option, false);
+    const points = [option.a, option.b, option.point].filter((p): p is THREE.Vector3 => Boolean(p));
     this.pushMeasurement({
       id: group.userData.measurementId as string,
-      kind: 'length',
-      label: 'Edge length',
-      value: length,
-      detail: [],
-      points: [start.toArray() as [number, number, number], end.toArray() as [number, number, number]],
+      kind: option.kind,
+      label: option.label,
+      value: option.value,
+      detail:
+        option.kind === 'coords' && option.point
+          ? (['x', 'y', 'z'] as const).map((axis) => ({ key: axis.toUpperCase(), value: formatLength(option.point![axis], this.units) }))
+          : option.a && option.b && option.kind === 'distance'
+            ? (['x', 'y', 'z'] as const).map((axis) => ({
+                key: `Δ${axis.toUpperCase()}`,
+                value: formatLength(Math.abs(option.b![axis] - option.a![axis]), this.units),
+              }))
+            : [],
+      points: points.map((p) => p.toArray() as [number, number, number]),
     });
-    this.clearPending();
+    this.liveOptions = [];
+    this.liveIndex = 0;
+    return true;
+  }
+
+  /** Drop the picked entities and the dimension not yet kept. */
+  clearPicked(): void {
+    for (const object of this.pickedObjects) this.removeHighlight(object);
+    this.pickedObjects = [];
+    this.picked = [];
+    this.liveOptions = [];
+    this.liveIndex = 0;
+    this.removeLive();
+    this.emitLive();
+    this.requestRender();
+  }
+
+  get hasPicked(): boolean {
+    return this.picked.length > 0;
+  }
+
+  /** A face, edge or vertex drawn over the model in `color`. */
+  private highlight(entity: Entity, color: number): THREE.Object3D {
+    if (entity.kind === 'face') {
+      const triangles = faceTriangleList(entity.part, entity.index);
+      const source = entity.part.mesh.geometry;
+      const sourceIndex = source.getIndex();
+      const subset = new Uint32Array(triangles.length * 3);
+      triangles.forEach((t, k) => {
+        for (let j = 0; j < 3; j += 1) subset[k * 3 + j] = sourceIndex ? sourceIndex.getX(t * 3 + j) : t * 3 + j;
+      });
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', source.getAttribute('position'));
+      geometry.setIndex(new THREE.BufferAttribute(subset, 1));
+      const material = new THREE.MeshBasicMaterial({
+        color,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: color === PICKED_COLOR ? 0.55 : 0.4,
+        depthTest: true,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -2,
+        polygonOffsetUnits: -2,
+      });
+      material.clippingPlanes = this.section.isEnabled ? [this.section.plane] : null;
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.renderOrder = 8;
+      // The position attribute belongs to the part: only the index is ours to free.
+      mesh.userData.sharedPosition = true;
+      entity.part.mesh.add(mesh);
+      return mesh;
+    }
+    if (entity.kind === 'edge') {
+      const line = this.fatLine(edgeLocalPoints(entity.part, entity.index), color, 4);
+      line.renderOrder = 22;
+      entity.part.mesh.add(line);
+      return line;
+    }
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(this.markerSize() * 1.2, 16, 12),
+      new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true }),
+    );
+    marker.position.copy(entity.point);
+    marker.renderOrder = 23;
+    this.scene.add(marker);
+    return marker;
+  }
+
+  private removeHighlight(object: THREE.Object3D): void {
+    object.removeFromParent();
+    object.traverse((child) => {
+      const material = (child as THREE.Mesh).material;
+      if (material instanceof LineMaterial) this.lineMaterials.delete(material);
+      // Leave the part's own vertex buffer alone; free only our index.
+      if (child.userData.sharedPosition) (child as THREE.Mesh).geometry.deleteAttribute('position');
+    });
+    disposeObject(object);
+    this.requestRender();
+  }
+
+  private markerSize(): number {
+    return (Math.max(...this.bounds.getSize(new THREE.Vector3()).toArray()) || 1) * 0.005;
+  }
+
+  private fatLine(points: THREE.Vector3[], color: number, width: number, closed = false): Line2 {
+    const flat: number[] = [];
+    for (const p of points) flat.push(p.x, p.y, p.z);
+    if (closed && points.length > 0) flat.push(points[0].x, points[0].y, points[0].z);
+    const geometry = new LineGeometry();
+    geometry.setPositions(flat);
+    const material = new LineMaterial({ color, linewidth: width, depthTest: false, transparent: true });
+    material.resolution.set(this.container.clientWidth || 1, this.container.clientHeight || 1);
+    this.lineMaterials.add(material);
+    const line = new Line2(geometry, material);
+    line.computeLineDistances();
+    return line;
+  }
+
+  /** A dimension as a drawing shows it: line with arrows, circle or arc, and its value. */
+  private drawDimension(option: MeasureOption, live: boolean): THREE.Group {
+    const group = this.createAnnotation();
+    const size = this.markerSize();
+    const arrow = (tip: THREE.Vector3, from: THREE.Vector3) => {
+      const direction = tip.clone().sub(from);
+      const length = direction.length();
+      if (length < 1e-12) return;
+      const head = Math.min(size * 3, length * 0.25);
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(head * 0.35, head, 12),
+        new THREE.MeshBasicMaterial({ color: MEASURE_COLOR, depthTest: false, transparent: true }),
+      );
+      cone.position.copy(tip).addScaledVector(direction.normalize(), -head / 2);
+      cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+      cone.renderOrder = 21;
+      group.add(cone);
+    };
+    if (option.a && option.b && option.a.distanceTo(option.b) > 0) {
+      const line = this.fatLine([option.a, option.b], MEASURE_COLOR, 2.5);
+      line.renderOrder = 20;
+      group.add(line);
+      arrow(option.b, option.a);
+      if (option.kind !== 'radius') arrow(option.a, option.b);
+    }
+    if (option.circle) {
+      const { center, normal, radius } = option.circle;
+      const helper = Math.abs(normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+      const u = helper.cross(normal).normalize();
+      const w = normal.clone().cross(u).normalize();
+      const ring: THREE.Vector3[] = [];
+      for (let i = 0; i < 96; i += 1) {
+        const angle = (i / 96) * Math.PI * 2;
+        ring.push(center.clone().addScaledVector(u, Math.cos(angle) * radius).addScaledVector(w, Math.sin(angle) * radius));
+      }
+      const circle = this.fatLine(ring, MEASURE_COLOR, 1.5, true);
+      circle.renderOrder = 20;
+      group.add(circle);
+    }
+    if (option.arc) {
+      const { center, from, to, radius } = option.arc;
+      const axis = from.clone().cross(to);
+      const angle = from.angleTo(to);
+      const points: THREE.Vector3[] = [];
+      if (axis.lengthSq() > 1e-12) {
+        axis.normalize();
+        for (let i = 0; i <= 48; i += 1) points.push(from.clone().applyAxisAngle(axis, (angle * i) / 48).multiplyScalar(radius).add(center));
+        const arc = this.fatLine(points, MEASURE_COLOR, 2);
+        arc.renderOrder = 20;
+        group.add(arc);
+        const rays = this.fatLine([center.clone().addScaledVector(from, radius * 1.15), center, center.clone().addScaledVector(to, radius * 1.15)], MEASURE_COLOR, 1.5);
+        rays.renderOrder = 20;
+        group.add(rays);
+        option = { ...option, labelAt: points[24].clone() };
+      }
+    }
+    if (option.kind === 'coords' && option.point) group.add(this.createPointMarker(option.point));
+
+    const element = document.createElement('div');
+    element.className = live ? 'cad-label cad-label-live' : 'cad-label';
+    element.textContent = this.optionText(option);
+    if (live && this.liveOptions.length > 1) {
+      const counter = document.createElement('span');
+      counter.className = 'cad-label-count';
+      counter.textContent = ` ${this.liveIndex + 1}/${this.liveOptions.length}`;
+      element.appendChild(counter);
+      element.title = translate('Wheel or Space: next variant');
+      element.addEventListener(
+        'wheel',
+        (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const delta = event.deltaY || event.deltaX;
+          if (delta !== 0) this.cycleMeasure(delta > 0 ? 1 : -1);
+        },
+        { passive: false },
+      );
+    }
+    const label = new CSS2DObject(element);
+    label.position.copy(option.labelAt);
+    group.add(label);
+    this.requestRender();
+    return group;
+  }
+
+  /** The value as a drawing writes it: Ø 12.00 mm, R 6.00 mm, 45.00°. */
+  private optionText(option: MeasureOption): string {
+    switch (option.kind) {
+      case 'diameter':
+        return `Ø ${formatLength(option.value, this.units)}`;
+      case 'radius':
+        return `R ${formatLength(option.value, this.units)}`;
+      case 'angle':
+        return formatAngle(option.value);
+      case 'area':
+        return formatArea(option.value, this.units);
+      case 'coords': {
+        const p = option.point ?? new THREE.Vector3();
+        const round = (value: number) => decimal(value.toFixed(Math.abs(value) < 1000 ? 2 : 1));
+        return `X ${round(p.x)}  Y ${round(p.y)}  Z ${round(p.z)}`;
+      }
+      default:
+        return formatLength(option.value, this.units);
+    }
   }
 
   private commitDistance(a: THREE.Vector3, b: THREE.Vector3): void {
@@ -812,6 +1234,7 @@ export class CadScene {
     const height = this.container.clientHeight || 1;
     this.renderer.setSize(width, height, false);
     this.labelRenderer.setSize(width, height);
+    for (const material of this.lineMaterials) material.resolution.set(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.requestRender();
@@ -859,10 +1282,15 @@ export class CadScene {
 
   dispose(): void {
     this.disposed = true;
+    this.stopThemeWatch();
     cancelAnimationFrame(this.frameHandle);
     this.resizeObserver.disconnect();
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove);
+    this.renderer.domElement.removeEventListener('pointerleave', this.onPointerLeave);
+    this.container.removeEventListener('wheel', this.onWheel, { capture: true });
+    cancelAnimationFrame(this.hoverFrame);
     this.clearModel();
     this.section.dispose();
     this.controls.dispose();

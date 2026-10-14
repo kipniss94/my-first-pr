@@ -3,10 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { computeSurfaceArea, computeVolume } from '@/lib/cad/geometry';
-import { loadMeshFile, loadNmg, mergeModels, type MergeSource } from '@/lib/cad/loaders';
-import { CadScene, disposeObject, type SelectionInfo } from '@/lib/cad/scene';
+import type { AssemblyPlacement } from '@docuview/shared';
+import { loadMeshFile, loadNmg, mergeModels, placeModels, type MergeSource } from '@/lib/cad/loaders';
+import { CadScene, disposeObject, type LiveMeasure, type SelectionInfo } from '@/lib/cad/scene';
 import type { RenderableComponent } from '@/lib/assembly';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
+import { formatCount, formatLength } from '@/lib/format';
+import { fetchApi } from '@/lib/api';
+import { saveToDisk } from '@/lib/edit';
+import { useT } from '@/lib/prefs';
 import type {
   CadModel,
   DisplayMode,
@@ -19,9 +24,11 @@ import type {
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { AnalysisPanel } from './AnalysisPanel';
+import { ExportMenu, type ExportChoice, type ExportScope } from './ExportMenu';
 import { ModelTree } from './ModelTree';
 import { PropertiesPanel } from './PropertiesPanel';
 import { ViewerToolbar } from './ViewerToolbar';
+import { LiveMeasurePanel } from './LiveMeasurePanel';
 
 interface CadViewerProps {
   /** Primary geometry. Null for an assembly that only has components so far. */
@@ -36,6 +43,16 @@ interface CadViewerProps {
    * ones already on screen.
    */
   components?: RenderableComponent[];
+  /**
+   * Where each component goes, read from the assembly. With these the parts
+   * are put in place; without them they are laid out side by side.
+   */
+  placements?: AssemblyPlacement[];
+  /**
+   * The graphics the assembly keeps of its parts, one mesh per part in its own
+   * coordinates: drawn where a placement's part file has not been added.
+   */
+  storedSource?: string | null;
   /** Sentence shown under the tree when component placement is approximate. */
   layoutNote?: string;
   onProgress(percent: number): void;
@@ -62,6 +79,8 @@ export function CadViewer({
   mode,
   fileName,
   components,
+  placements,
+  storedSource,
   layoutNote,
   onProgress,
   onReady,
@@ -69,6 +88,7 @@ export function CadViewer({
 }: CadViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CadScene | null>(null);
+  const { t } = useT();
 
   const [model, setModel] = useState<CadModel | null>(null);
   const [loadError, setLoadError] = useState<{ message: string; hint?: string } | null>(null);
@@ -77,6 +97,7 @@ export function CadViewer({
   const [selection, setSelection] = useState<SelectionInfo>({ partId: null, faceIndex: null, faceCount: null });
   const [measurements, setMeasurements] = useState<MeasurementRecord[]>([]);
   const [pendingPoints, setPendingPoints] = useState(0);
+  const [live, setLive] = useState<LiveMeasure | null>(null);
   const [fps, setFps] = useState<number | null>(null);
   const [hiddenVersion, setHiddenVersion] = useState(0);
 
@@ -106,6 +127,7 @@ export function CadViewer({
         onSelectionChange: setSelection,
         onMeasurementsChange: setMeasurements,
         onPendingPointsChange: setPendingPoints,
+        onLiveMeasureChange: setLive,
         onFps: setFps,
       });
     } catch {
@@ -159,7 +181,7 @@ export function CadViewer({
     };
 
     const formatId = typeof meta.formatId === 'string' ? meta.formatId : 'stl';
-    const wanted: { key: string; name: string; load: () => Promise<CadModel> }[] = [];
+    const wanted: { key: string; name: string; configuration?: string; load: () => Promise<CadModel> }[] = [];
 
     if (source) {
       wanted.push({
@@ -171,6 +193,9 @@ export function CadViewer({
             : loadMeshFile(source, formatId, fileName, report, controller.signal),
       });
     }
+    if (storedSource && placements?.length) {
+      wanted.push({ key: `stored:${storedSource}`, name: fileName, load: () => loadNmg(storedSource, undefined, controller.signal) });
+    }
     for (const component of components ?? []) {
       wanted.push({
         key: `component:${component.id}`,
@@ -180,6 +205,14 @@ export function CadViewer({
             ? loadNmg(component.source, undefined, controller.signal)
             : loadMeshFile(component.source, component.formatId, component.name, undefined, controller.signal),
       });
+      for (const [configuration, url] of Object.entries(component.configurations ?? {})) {
+        wanted.push({
+          key: `component:${component.id}:${configuration}`,
+          name: component.name,
+          configuration,
+          load: () => loadNmg(url, undefined, controller.signal),
+        });
+      }
     }
 
     if (wanted.length === 0) {
@@ -193,6 +226,9 @@ export function CadViewer({
     const run = async (): Promise<void> => {
       const cache = loadedRef.current;
       const sources: MergeSource[] = [];
+      let primary: CadModel | null = null;
+      let stored: CadModel | null = null;
+      const parts: MergeSource[] = [];
       let loadedAny = false;
 
       for (const entry of wanted) {
@@ -203,7 +239,14 @@ export function CadViewer({
           cache.set(entry.key, model);
           loadedAny = true;
         }
-        sources.push({ name: entry.name, model });
+        if (entry.key.startsWith('stored:')) {
+          stored = model;
+          continue;
+        }
+        if (entry.key.startsWith('primary:')) primary = model;
+        else parts.push({ name: entry.name, model, configuration: entry.configuration });
+        // Laid out side by side, a part shows once, as saved.
+        if (entry.configuration === undefined) sources.push({ name: entry.name, model });
       }
 
       // Drop anything that is no longer part of the document.
@@ -215,7 +258,11 @@ export function CadViewer({
         }
       }
 
-      const merged = sources.length === 1 && !components?.length ? sources[0].model : mergeModels(sources, fileName);
+      const merged = placements?.length
+        ? placeModels(primary, parts, placements, fileName, stored)
+        : sources.length === 1 && !components?.length
+          ? sources[0].model
+          : mergeModels(sources, fileName);
       if (cancelled) return;
 
       if (merged.parts.length === 0) {
@@ -260,12 +307,18 @@ export function CadViewer({
       cancelled = true;
       controller.abort();
     };
-  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, source]);
+  }, [componentKey, components, fileName, meta, mode, onProgress, onReady, onThumbnail, placements, source, storedSource]);
 
   /* ----------------------------- state → scene ---------------------------- */
 
   useEffect(() => {
     sceneRef.current?.setTool(tool);
+    if (tool !== 'measure') setLive(null);
+    else {
+      setLive((current) => current ?? { selection: [], options: [], index: 0 });
+      // A focused toolbar button would take Space for itself.
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
   }, [tool]);
 
   useEffect(() => {
@@ -324,7 +377,14 @@ export function CadViewer({
       ? { volume: null as number | null, approximate: false, area: 0 }
       : (() => {
           const volume = computeVolume(part.mesh.geometry);
-          return { volume: volume.volume, approximate: volume.approximate, area: computeSurfaceArea(part.mesh.geometry) };
+          // The geometry may be scaled into place (glTF is in metres): volume
+          // grows with the scale's determinant, area (for an even scale) with its square.
+          const factor = Math.abs(part.mesh.matrixWorld.determinant());
+          return {
+            volume: volume.volume * factor,
+            approximate: volume.approximate,
+            area: computeSurfaceArea(part.mesh.geometry) * Math.cbrt(factor) ** 2,
+          };
         })();
 
     return {
@@ -391,6 +451,45 @@ export function CadViewer({
     link.click();
   }, []);
 
+  const parasolidUrl = typeof meta.parasolidUrl === 'string' ? meta.parasolidUrl : null;
+
+  const onExport = useCallback(
+    async (choice: ExportChoice, scope: ExportScope) => {
+      const base = fileName.replace(/.[^.]+$/, '').trim() || 'model';
+      if (choice === 'parasolid') {
+        if (!parasolidUrl) return;
+        const response = await fetchApi(parasolidUrl);
+        if (!response.ok) throw new Error(t('The exact solid could not be downloaded.'));
+        await saveToDisk(new Blob([await response.arrayBuffer()], { type: 'application/octet-stream' }), `${base}.x_t`);
+        return;
+      }
+      const scene = sceneRef.current;
+      if (!scene || !model) return;
+      const parts =
+        scope === 'selection' && selection.partId
+          ? model.parts.filter((part) => part.id === selection.partId)
+          : model.parts.filter((part) => !scene.hidden.has(part.id));
+      if (parts.length === 0) throw new Error(t('Nothing to save: every part is hidden.'));
+      const { collectMeshes, exportMeshes, EXPORT_EXTENSIONS } = await import('@/lib/cad/export');
+      const meshes = collectMeshes(model, parts, (part) => {
+        const material = (Array.isArray(part.mesh.material) ? part.mesh.material[0] : part.mesh.material) as THREE.MeshStandardMaterial;
+        return scene.baseColor(part.id) ?? material.color ?? new THREE.Color(0.7, 0.7, 0.7);
+      });
+      if (meshes.length === 0) throw new Error(t('Nothing to save: every part is hidden.'));
+      const name = scope === 'selection' ? parts[0].name || base : base;
+      const { blob, simplified } = await exportMeshes(meshes, choice, name);
+      const saved = await saveToDisk(blob, `${name.replace(/[\\/:*?"<>|]+/g, '_')}.${EXPORT_EXTENSIONS[choice]}`);
+      if (saved && simplified) {
+        return t('Saved. For a lighter STEP the mesh was simplified from {from} to {to} triangles, within {tolerance} mm.', {
+          from: formatCount(simplified.from),
+          to: formatCount(simplified.to),
+          tolerance: simplified.tolerance,
+        });
+      }
+    },
+    [fileName, model, parasolidUrl, selection.partId, t],
+  );
+
   const hiddenParts = useMemo(() => {
     void hiddenVersion; // recompute whenever visibility changed
     return sceneRef.current?.hidden ?? new Set<string>();
@@ -405,6 +504,24 @@ export function CadViewer({
 
       const scene = sceneRef.current;
       if (!scene) return;
+      // The dimension tool: Space switches the variant, Enter keeps it, Esc clears.
+      if (scene.activeTool === 'measure') {
+        if (event.key === ' ') {
+          event.preventDefault();
+          scene.cycleMeasure(event.shiftKey ? -1 : 1);
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          scene.commitMeasure();
+          scene.clearPicked();
+          return;
+        }
+        if (event.key === 'Escape' && scene.hasPicked) {
+          scene.clearPicked();
+          return;
+        }
+      }
       const views: Record<string, StandardView> = { '1': 'front', '2': 'back', '3': 'left', '4': 'right', '5': 'top', '6': 'bottom', '7': 'iso' };
       if (views[event.key]) {
         scene.setStandardView(views[event.key]);
@@ -425,7 +542,7 @@ export function CadViewer({
           setDisplayMode((current) => (current === 'shaded-edges' ? 'shaded' : 'shaded-edges'));
           break;
         case 'm':
-          setTool('measure-distance');
+          setTool('measure');
           break;
         case 'x':
           setSection((current) => ({ ...current, enabled: !current.enabled }));
@@ -466,7 +583,7 @@ export function CadViewer({
                 </div>
                 {layoutNote && (
                   <p className="shrink-0 border-t border-line px-3 py-2.5 text-[11px] leading-relaxed text-mist-500">
-                    {layoutNote}
+                    {t(layoutNote)}
                   </p>
                 )}
               </div>
@@ -475,19 +592,35 @@ export function CadViewer({
           </aside>
 
           {/* Centre: the 3D view */}
-          <div className="relative min-w-0 flex-1 bg-[#0e131b]">
+          <div className="relative min-w-0 flex-1 bg-[var(--viewport-bg)]">
             <div ref={containerRef} className="absolute inset-0" data-testid="cad-canvas" />
             {!model && !loadError && <LoadingOverlay percent={percent} />}
-            {model && tool !== 'select' && (
+            {model && (tool === 'measure-distance' || tool === 'measure-angle') && (
               <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-lg border border-measure/40 bg-ink-900/90 px-3 py-1.5 text-[12px] text-measure backdrop-blur">
-                {tool === 'measure-distance' && `Click two points · ${pendingPoints}/2`}
-                {tool === 'measure-angle' && `Click three points · ${pendingPoints}/3`}
-                {tool === 'measure-length' && 'Click a model edge'}
+                {tool === 'measure-distance'
+                  ? t('Click two points · {n}/2', { n: pendingPoints })
+                  : t('Click three points, the corner second · {n}/3', { n: pendingPoints })}
               </div>
+            )}
+            {model && tool === 'measure' && live && (
+              <LiveMeasurePanel
+                live={live}
+                units={model.units}
+                onCycle={(step) => sceneRef.current?.cycleMeasure(step)}
+                onChoose={(index) => sceneRef.current?.chooseMeasure(index)}
+                onKeep={() => {
+                  sceneRef.current?.commitMeasure();
+                  sceneRef.current?.clearPicked();
+                }}
+                onClear={() => sceneRef.current?.clearPicked()}
+              />
             )}
             {model && section.enabled && (
               <div className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-line bg-ink-900/90 px-2.5 py-1.5 font-mono text-[11px] text-mist-300 backdrop-blur">
-                Section {section.axis.toUpperCase()} @ {sectionCoordinate.toFixed(2)} {model.units}
+                {t('Section {axis} @ {position}', {
+                  axis: section.axis.toUpperCase(),
+                  position: formatLength(sectionCoordinate, model.units),
+                })}
               </div>
             )}
           </div>
@@ -502,10 +635,10 @@ export function CadViewer({
               <>
                 <div className="flex shrink-0 border-b border-line">
                   <TabButton active={rightTab === 'properties'} onClick={() => setRightTab('properties')}>
-                    Properties
+                    {t('Properties')}
                   </TabButton>
                   <TabButton active={rightTab === 'analysis'} onClick={() => setRightTab('analysis')}>
-                    Analysis
+                    {t('Analysis')}
                   </TabButton>
                 </div>
                 {rightTab === 'properties' ? (
@@ -566,6 +699,11 @@ export function CadViewer({
           onFit={() => sceneRef.current?.fit()}
           onReset={() => sceneRef.current?.resetCamera()}
           onSnapshot={onSnapshot}
+          extra={
+            model ? (
+              <ExportMenu hasSelection={Boolean(selection.partId)} hasParasolid={Boolean(parasolidUrl)} onExport={onExport} />
+            ) : null
+          }
         />
       </div>
 
@@ -575,10 +713,11 @@ export function CadViewer({
 }
 
 function LoadingOverlay({ percent }: { percent: number }) {
+  const { t } = useT();
   return (
     <div className="absolute inset-0 grid place-items-center bg-ink-900/70 backdrop-blur-sm">
       <div className="w-56 text-center">
-        <p className="text-[13px] text-mist-300">Loading geometry</p>
+        <p className="text-[13px] text-mist-300">{t('Loading geometry')}</p>
         <div className="mt-3 h-1 overflow-hidden rounded-full bg-ink-700">
           <div
             className="h-full rounded-full bg-accent transition-[width] duration-200"
@@ -607,11 +746,12 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick(): 
 
 /** The little tab that collapses a side panel. */
 function PanelHandle({ side, open, onClick }: { side: 'left' | 'right'; open: boolean; onClick(): void }) {
+  const { t } = useT();
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={`${open ? 'Collapse' : 'Expand'} ${side} panel`}
+      aria-label={t(`${open ? 'Collapse' : 'Expand'} the ${side} panel`)}
       className={`absolute top-1/2 z-10 grid h-12 w-4 -translate-y-1/2 place-items-center rounded-md border border-line bg-ink-800 text-mist-400 transition-colors hover:bg-ink-700 hover:text-mist-100 ${
         side === 'left' ? '-right-2' : '-left-2'
       }`}

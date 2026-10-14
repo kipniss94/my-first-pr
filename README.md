@@ -15,11 +15,13 @@ tile with its own preview, and clicking one opens it again immediately, without
 sending the file anywhere. You never choose a document type or a viewer — the
 format is read from the file itself.
 
-Native CAD opens directly. A `.SLDPRT` or `.SLDASM` does not have to be saved
-as STEP first: the file is opened from the preview and document properties it
-carries, and an assembly asks for the components it references and draws them
-as they arrive. Point `CAD_CONVERTER_CMD` at a converter you are licensed to
-run and the same files arrive as full, measurable geometry instead.
+Native CAD opens directly. A `.SLDPRT` does not have to be saved as STEP first:
+it opens in 3D from SolidWorks' own display mesh, or — when the file was saved
+without one — from its exact Parasolid geometry, triangulated here. A `.SLDASM`
+is read for its component tree and the placement of every part; parts saved
+inside it are drawn at once, and parts in their own files appear in place as
+they are added. No CAD is needed anywhere. `CAD_CONVERTER_CMD` remains an
+optional fallback for other closed formats.
 
 No installation for the visitor, no account, no plugin.
 
@@ -187,7 +189,9 @@ before — the cache is on the visitor's machine, and one button clears it.
 | STL, OBJ, PLY, glTF, 3MF, FBX, COLLADA | three.js loaders (browser) | Already correct and maintained; parsing in the browser removes a round trip. |
 | DXF | `dxf-parser` + a 2D canvas renderer (browser) | 2D drawings do not need WebGL. |
 | DWG | External converter → DXF | No usable open-source DWG reader exists in JavaScript. |
-| SolidWorks, Inventor, CATIA, Revit, JT | Compound-file reader + embedded preview, or `CAD_CONVERTER_CMD` → STEP | The solid model is a closed format, but the preview and property set beside it are documented — so the file opens, honestly labelled, instead of being refused. |
+| SolidWorks `.SLDPRT` | Own reader: SolidWorks' display mesh, or the Parasolid B-rep triangulated here | Opens in 3D with no CAD installed. Parts saved without a display mesh (old OLE files, imported bodies) are drawn from their exact geometry. |
+| SolidWorks `.SLDASM` | Component tree and placements read from the file | Parts saved inside the assembly are drawn at once; parts in their own files appear in place as they are added (drop the folder). |
+| Inventor, CATIA, Revit, JT | Compound-file reader + embedded preview, or `CAD_CONVERTER_CMD` → STEP | The solid model is a closed format, but the preview and property set beside it are documented — so the file opens, honestly labelled, instead of being refused. |
 | PDF | PDF.js (browser) | The reference implementation. |
 | Word | `mammoth` → HTML; LibreOffice for exact layout | Semantic HTML stays selectable and reflows; LibreOffice covers layout fidelity on demand. |
 | Excel | `exceljs` → normalised grid | Gives styles, merges and number formats, rendered into a virtualised grid. |

@@ -2,7 +2,6 @@
 
 import { useCallback } from 'react';
 import { PdfViewer } from '@/components/pdf/PdfViewer';
-import type { PageEditing } from '@/lib/page-editing';
 
 /**
  * The "exact page layout" view.
@@ -16,13 +15,10 @@ export function PageLayoutToggle({
   source,
   label,
   onBack,
-  editing,
 }: {
   source: string;
   label: string;
   onBack(): void;
-  /** Page deletion, for documents whose pages can be edited. */
-  editing?: PageEditing;
 }) {
   const noop = useCallback(() => undefined, []);
 
@@ -40,7 +36,7 @@ export function PageLayoutToggle({
         </span>
       </div>
       <div className="flex min-h-0 flex-1">
-        <PdfViewer source={source} fileName="Page layout" onProgress={noop} onReady={noop} editing={editing} />
+        <PdfViewer source={source} fileName="Page layout" onProgress={noop} onReady={noop} />
       </div>
     </div>
   );

@@ -16,8 +16,6 @@ export interface FileMeta {
   declaredMime: string;
   createdAt: string;
   expiresAt: string;
-  /** Bumped by every page edit, so browsers never reuse a stale copy. */
-  revision?: number;
 }
 
 const ASSET_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

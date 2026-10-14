@@ -13,8 +13,10 @@
   },
   "dependencies": {
     "@docuview/shared": "*",
+    "@xmldom/xmldom": "^0.8.15",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
+    "earcut": "^3.2.3",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
@@ -23,8 +25,6 @@
     "mammoth": "^1.12.1",
     "multer": "^2.2.0",
     "occt-import-js": "^0.0.23",
-    "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "^5.7.284",
     "pino": "^10.3.1",
     "zod": "^4.4.3"
   },

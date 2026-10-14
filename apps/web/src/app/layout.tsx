@@ -1,4 +1,6 @@
 import type { Metadata, Viewport } from 'next';
+import { PrefsProvider } from '@/lib/prefs';
+import { serverLang, serverTheme } from '@/lib/server-lang';
 import './globals.css';
 
 const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3000';
@@ -49,10 +51,19 @@ export const viewport: Viewport = {
   initialScale: 1,
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The visitor's choices, so the first paint is already in their language
+  // and theme. Nothing chosen yet: dark, and English unless the browser asks
+  // for Russian (the toggle then remembers whatever is picked).
+  const [lang, theme] = await Promise.all([serverLang(), serverTheme()]);
+
   return (
-    <html lang="en">
-      <body className="min-h-full antialiased">{children}</body>
+    <html lang={lang} data-theme={theme} style={{ colorScheme: theme }}>
+      <body className="min-h-full antialiased">
+        <PrefsProvider lang={lang} theme={theme}>
+          {children}
+        </PrefsProvider>
+      </body>
     </html>
   );
 }

@@ -127,7 +127,11 @@ function tryEntry(buffer: Buffer, at: number): { entry: PackageEntry; next: numb
   }
   if (data.length !== size || crc32(data) !== crc) return null;
 
-  const name = unswapNibbles(buffer.subarray(at + LOCAL_HEADER_BYTES, at + LOCAL_HEADER_BYTES + nameLength)).toString('latin1');
+  // Names are UTF-8 — a virtual component can be called anything — though the
+  // header does not flag it; bytes that are not valid UTF-8 are read as Latin-1.
+  const raw = unswapNibbles(buffer.subarray(at + LOCAL_HEADER_BYTES, at + LOCAL_HEADER_BYTES + nameLength));
+  const utf8 = raw.toString('utf8');
+  const name = utf8.includes('�') ? raw.toString('latin1') : utf8;
   return { entry: { name, offset: at, data }, next: start + compressed };
 }
 
@@ -137,19 +141,40 @@ function tryEntry(buffer: Buffer, at: number): { entry: PackageEntry; next: numb
  */
 const ZLIB_CODEC = Buffer.from('231dd571da8148a2a85898b21b89ef99', 'hex');
 
-/** Unwrap the inner zlib layer of an entry, verified by both declared sizes. */
+/** The codec never writes a block larger than this. */
+const CODEC_BLOCK_BYTES = 1 << 20;
+
+/**
+ * Unwrap the inner zlib layer of an entry, verified by both declared sizes.
+ *
+ * A stream over 1 MiB is stored as consecutive blocks, each with its own two
+ * sizes and no second codec GUID. Reading only the first block silently cut
+ * every large model off at exactly 1 048 576 bytes. Block sizes vary, so the
+ * end is where the next pair of sizes no longer inflates to exactly itself.
+ */
 export function unwrapCodec(data: Buffer): Buffer | null {
   const at = data.indexOf(ZLIB_CODEC);
-  if (at < 0 || at + 24 > data.length) return null;
-  const size = data.readUInt32LE(at + 16);
-  const compressed = data.readUInt32LE(at + 20);
-  if (size === 0 || size > MAX_ENTRY_BYTES || at + 24 + compressed > data.length) return null;
-  try {
-    const out = zlib.inflateSync(data.subarray(at + 24, at + 24 + compressed), { maxOutputLength: MAX_ENTRY_BYTES });
-    return out.length === size ? out : null;
-  } catch {
-    return null;
+  if (at < 0) return null;
+  const blocks: Buffer[] = [];
+  let total = 0;
+  let pos = at + 16;
+  while (pos + 8 <= data.length) {
+    const size = data.readUInt32LE(pos);
+    const compressed = data.readUInt32LE(pos + 4);
+    if (size === 0 || size > CODEC_BLOCK_BYTES || compressed === 0 || pos + 8 + compressed > data.length) break;
+    let out: Buffer;
+    try {
+      out = zlib.inflateSync(data.subarray(pos + 8, pos + 8 + compressed), { maxOutputLength: CODEC_BLOCK_BYTES });
+    } catch {
+      break;
+    }
+    if (out.length !== size) break;
+    blocks.push(out);
+    total += size;
+    if (total > MAX_ENTRY_BYTES) return null;
+    pos += 8 + compressed;
   }
+  return blocks.length > 0 ? Buffer.concat(blocks, total) : null;
 }
 
 /** The preview SolidWorks rendered when the part was last saved. */

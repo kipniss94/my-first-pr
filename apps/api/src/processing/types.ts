@@ -16,6 +16,8 @@ export interface ProcessRequest {
     /** Optional licensed converter for native CAD formats. */
     cadConverterCmd: string | null;
     timeoutMs: number;
+    /** For a part supplied to an assembly: the configurations the assembly uses. */
+    configurations?: string[];
   };
 }
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { apiUrl } from '@/lib/api';
 import { THUMBNAIL_EDGE } from '@/lib/thumbnail';
 import { ViewerAdRail } from '@/components/site/AdSlot';
+import { useT } from '@/lib/prefs';
 
 /** Images need no processing pipeline; they just need to be framed properly. */
 export function ImageViewer({
@@ -17,6 +18,7 @@ export function ImageViewer({
   onThumbnail?(dataUrl: string): void;
 }) {
   const [zoom, setZoom] = useState(1);
+  const { t } = useT();
   const [fit, setFit] = useState(true);
   const [failed, setFailed] = useState(false);
 
@@ -76,13 +78,13 @@ export function ImageViewer({
         </div>
         <div className="min-h-0 flex-1 overflow-auto bg-ink-950/60 p-6">
           {failed ? (
-            <p className="text-center text-sm text-mist-400">This image could not be displayed.</p>
+            <p className="text-center text-sm text-mist-400">{t('This image could not be displayed.')}</p>
           ) : (
             <div className="flex min-h-full items-center justify-center">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={apiUrl(source)}
-                alt="Uploaded document"
+                alt={t('Uploaded document')}
                 onError={() => setFailed(true)}
                 className={fit ? 'max-h-full max-w-full object-contain' : ''}
                 style={fit ? undefined : { width: `${zoom * 100}%`, maxWidth: 'none' }}

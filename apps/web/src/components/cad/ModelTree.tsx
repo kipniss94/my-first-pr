@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import type { CadModel, CadTreeNode } from '@/lib/cad/types';
+import { formatCount } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 
 interface ModelTreeProps {
   model: CadModel;
@@ -28,6 +30,7 @@ export function ModelTree({
   onIsolate,
 }: ModelTreeProps) {
   const nodesById = useMemo(() => new Map(model.nodes.map((node) => [node.id, node])), [model.nodes]);
+  const { t, tp } = useT();
 
   /** All part ids at or below a node. */
   const partsUnder = useMemo(() => {
@@ -61,12 +64,12 @@ export function ModelTree({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-line px-3 py-2.5">
-        <h2 className="field-label">Model tree</h2>
+        <h2 className="field-label">{t('Model tree')}</h2>
         <button
           type="button"
           className="btn-icon"
-          title="Show every component"
-          aria-label="Show every component"
+          title={t('Show every component')}
+          aria-label={t('Show every component')}
           onClick={() => onIsolate([])}
         >
           <svg viewBox="0 0 20 20" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
@@ -77,7 +80,7 @@ export function ModelTree({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto py-1" data-testid="model-tree">
-        <ul role="tree" aria-label="Model components" className="text-[13px]">
+        <ul role="tree" aria-label={t('Model components')} className="text-[13px]">
           {roots.map((rootId) => (
             <TreeRow
               key={rootId}
@@ -98,8 +101,13 @@ export function ModelTree({
       </div>
 
       <div className="border-t border-line px-3 py-2 text-[11px] text-mist-500">
-        {model.stats.parts} part{model.stats.parts === 1 ? '' : 's'} ·{' '}
-        {model.stats.triangles.toLocaleString('en-US')} triangles
+        {tp(model.stats.parts, ['{n} part', '{n} parts'], ['{n} деталь', '{n} детали', '{n} деталей'])} ·{' '}
+        {tp(
+          model.stats.triangles,
+          ['{count} triangle', '{count} triangles'],
+          ['{count} треугольник', '{count} треугольника', '{count} треугольников'],
+          { count: formatCount(model.stats.triangles) },
+        )}
       </div>
     </div>
   );
@@ -217,6 +225,7 @@ function TreeRowBody({
   onIsolate,
   onToggleVisibility,
 }: TreeRowBodyProps) {
+  const { t } = useT();
   return (
     <div
       className={`group flex items-center gap-1 rounded-md px-1 py-[3px] transition-colors ${
@@ -231,7 +240,7 @@ function TreeRowBody({
           type="button"
           onClick={onToggle}
           className="grid h-4 w-4 shrink-0 place-items-center rounded text-mist-400 hover:text-mist-100"
-          aria-label={isOpen ? `Collapse ${name}` : `Expand ${name}`}
+          aria-label={t(isOpen ? 'Collapse {name}' : 'Expand {name}', { name })}
         >
           <svg viewBox="0 0 12 12" className={`h-3 w-3 transition-transform ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true">
             <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
@@ -244,7 +253,7 @@ function TreeRowBody({
         onClick={onSelect}
         onDoubleClick={onIsolate}
         className={`min-w-0 flex-1 truncate text-left ${allHidden ? 'text-mist-500 line-through' : 'text-mist-200'}`}
-        title={`${name} — double-click to isolate`}
+        title={t('{name} — double-click to isolate', { name })}
       >
         {name}
       </button>
@@ -253,8 +262,8 @@ function TreeRowBody({
         <button
           type="button"
           className="btn-icon !p-1"
-          title={allHidden ? 'Show' : 'Hide'}
-          aria-label={allHidden ? `Show ${name}` : `Hide ${name}`}
+          title={allHidden ? t('Show') : t('Hide')}
+          aria-label={t(allHidden ? 'Show {name}' : 'Hide {name}', { name })}
           onClick={onToggleVisibility}
         >
           {allHidden ? (
@@ -272,8 +281,8 @@ function TreeRowBody({
         <button
           type="button"
           className="btn-icon !p-1"
-          title="Isolate"
-          aria-label={`Isolate ${name}`}
+          title={t('Isolate')}
+          aria-label={t('Isolate {name}', { name })}
           onClick={onIsolate}
         >
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">

@@ -47,7 +47,12 @@ export type DisplayMode = 'shaded' | 'shaded-edges' | 'wireframe';
 
 export type StandardView = 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'iso';
 
-export type ToolMode = 'select' | 'measure-distance' | 'measure-length' | 'measure-angle';
+/**
+ * `measure` is the smart tool: faces, edges and vertices, with the dimensions
+ * between them. The other two take free points: two for a distance, three
+ * for an angle.
+ */
+export type ToolMode = 'select' | 'measure' | 'measure-distance' | 'measure-angle';
 
 export type SectionAxis = 'x' | 'y' | 'z';
 
@@ -63,7 +68,8 @@ export interface SectionState {
 
 export interface MeasurementRecord {
   id: string;
-  kind: 'distance' | 'length' | 'angle';
+  kind: 'distance' | 'length' | 'angle' | 'diameter' | 'radius' | 'area' | 'coords';
+  /** English; the interface translates it. */
   label: string;
   value: number;
   /** Extra readouts shown under the value, e.g. ΔX / ΔY / ΔZ. */

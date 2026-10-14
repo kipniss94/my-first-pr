@@ -54,6 +54,13 @@ class Worker {
     this.child.stderr?.on('data', (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-4000);
     });
+    // A write to a worker that has just exited fails with EPIPE on this stream.
+    // Without a listener that error is thrown, and it takes the whole API down
+    // with it; the worker's own exit is reported through 'close' below.
+    this.child.stdin?.on('error', (err) => {
+      logger.warn({ err, pid: this.child.pid }, 'processing worker input closed');
+      this.kill('input closed');
+    });
     this.child.on('error', (err) => this.die(err, 'spawn error'));
     this.child.on('close', (code, signal) => {
       this.die(new Error(`processing worker exited (code ${code}, signal ${signal})`), 'exit');
@@ -90,6 +97,22 @@ class Worker {
     if (this.dead) return;
     logger.debug({ reason, pid: this.child.pid }, 'killing processing worker');
     this.child.kill('SIGKILL');
+  }
+
+  /**
+   * Take an idle worker out of service now, not when its process has exited.
+   *
+   * 'close' arrives some milliseconds after the kill. A job submitted in that
+   * window would otherwise be handed to a process that is already gone — which
+   * is exactly what a folder of parts dropped at once, or the model check,
+   * does.
+   */
+  private retire(reason: string): void {
+    if (this.dead) return;
+    this.kill(reason);
+    this.dead = true;
+    this.clearIdleTimer();
+    this.onDead(this);
   }
 
   private onStdout(chunk: string): void {
@@ -142,7 +165,7 @@ class Worker {
     this.current = null;
     settle();
     if (this.jobsRun >= MAX_JOBS_PER_WORKER) {
-      this.kill('max jobs reached');
+      this.retire('max jobs reached');
       return;
     }
     this.armIdleTimer();
@@ -181,7 +204,7 @@ class Worker {
 
   private armIdleTimer(): void {
     this.clearIdleTimer();
-    this.idleTimer = setTimeout(() => this.kill('idle'), IDLE_TIMEOUT_MS);
+    this.idleTimer = setTimeout(() => this.retire('idle'), IDLE_TIMEOUT_MS);
     this.idleTimer.unref();
   }
 

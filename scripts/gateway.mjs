@@ -36,10 +36,19 @@ function unavailable(res) {
   );
 }
 
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
 const server = http.createServer((req, res) => {
   const target = req.url?.startsWith('/api/') ? API : WEB;
   const client = req.socket.remoteAddress ?? '';
   const forwardedFor = req.headers['x-forwarded-for'];
+
+  // Lets the launcher find and stop a gateway left behind by an earlier run.
+  if (req.url === '/__gateway' && LOOPBACK.has(client) && !forwardedFor) {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ gateway: 'docuview', pid: process.pid }));
+    return;
+  }
 
   const upstream = http.request(
     {

@@ -3,16 +3,18 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { JobState } from '@docuview/shared';
 import { apiUrl, deleteFile } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
-import { cancelSession, forgetSession, markViewerStage, type Session } from '@/lib/session';
+import { cancelSession, forgetSession, markViewerStage, refreshSession, type Session } from '@/lib/session';
 import { removeDocument, setThumbnail } from '@/lib/cache';
+import { useT } from '@/lib/prefs';
+import { HeaderControls } from '@/components/site/HeaderControls';
 import { Logo } from '@/components/site/SiteChrome';
 import { ErrorPanel, WarningList } from './ErrorPanel';
 import { StageRail } from './StageRail';
-import { usePageEditing, withRevision } from '@/lib/page-editing';
+import { OpenReportBanner, ViewerTabs } from './ViewerTabs';
 
 /**
  * Viewers are loaded on demand. three.js and PDF.js together are several
@@ -26,6 +28,10 @@ const NativeCadViewer = dynamic(() => import('@/components/cad/NativeCadViewer')
   ssr: false,
   loading,
 });
+const DrawingViewer = dynamic(() => import('@/components/cad/DrawingViewer').then((m) => m.DrawingViewer), {
+  ssr: false,
+  loading,
+});
 const PdfViewer = dynamic(() => import('@/components/pdf/PdfViewer').then((m) => m.PdfViewer), { ssr: false, loading });
 const WordViewer = dynamic(() => import('@/components/office/WordViewer').then((m) => m.WordViewer), { ssr: false, loading });
 const SheetViewer = dynamic(() => import('@/components/office/SheetViewer').then((m) => m.SheetViewer), { ssr: false, loading });
@@ -33,11 +39,12 @@ const SlidesViewer = dynamic(() => import('@/components/office/SlidesViewer').th
 const ImageViewer = dynamic(() => import('@/components/office/ImageViewer').then((m) => m.ImageViewer), { ssr: false, loading });
 
 function ViewerSkeleton() {
+  const { t } = useT();
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center">
       <div className="flex items-center gap-3 text-sm text-mist-400">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
-        Loading viewer…
+        {t('Loading viewer…')}
       </div>
     </div>
   );
@@ -45,15 +52,22 @@ function ViewerSkeleton() {
 
 export function ViewerShell({ session }: { session: Session }) {
   const router = useRouter();
-  const editing = usePageEditing(session.fileId, session.docId ?? null, session.fileName);
+  const { t } = useT();
   const [dismissedWarnings, setDismissedWarnings] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const job = session.job;
   const result = job?.result ?? null;
 
+  // An assembly may have gained components while its tab was in the background.
+  const isAssembly = Boolean(job?.assembly);
+  useEffect(() => {
+    if (isAssembly) void refreshSession(session.id);
+  }, [isAssembly, session.id]);
+
   const onCancel = useCallback(() => {
     cancelSession(session.id);
+    forgetSession(session.id);
     router.push('/');
   }, [router, session.id]);
 
@@ -91,12 +105,13 @@ export function ViewerShell({ session }: { session: Session }) {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-ink-900">
       <ViewerHeader
-        revision={editing.revision}
         session={session}
         job={job}
         onDelete={onDelete}
         deleting={deleting}
       />
+      <ViewerTabs currentId={session.id} />
+      <OpenReportBanner />
 
       {result && !dismissedWarnings && (
         <WarningList warnings={result.warnings} onDismiss={() => setDismissedWarnings(true)} />
@@ -108,9 +123,9 @@ export function ViewerShell({ session }: { session: Session }) {
 
       {session.phase === 'cancelled' && (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 px-4 text-center">
-          <p className="text-[15px] text-mist-300">This document was cancelled.</p>
+          <p className="text-[15px] text-mist-300">{t('This document was cancelled.')}</p>
           <Link href="/" className="btn btn-primary">
-            Back to the workspace
+            {t('Back to the workspace')}
           </Link>
         </div>
       )}
@@ -149,6 +164,17 @@ export function ViewerShell({ session }: { session: Session }) {
               fileName={session.fileName}
               jobId={session.jobId}
               assembly={job?.assembly ?? null}
+              recordedPath={typeof result.meta.originalPath === 'string' ? result.meta.originalPath : null}
+              sourcePath={session.sourcePath}
+              onProgress={onViewerLoading}
+              onReady={onViewerReady}
+              onThumbnail={onThumbnail}
+            />
+          )}
+          {result.viewer === 'cad-drawing' && (
+            <DrawingViewer
+              source={result.source}
+              fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}
@@ -159,28 +185,29 @@ export function ViewerShell({ session }: { session: Session }) {
           )}
           {result.viewer === 'pdf' && (
             <PdfViewer
-              source={withRevision(result.source, editing.revision)}
+              source={result.source}
               fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}
-              editing={editing}
+              editable={session.fileId ? { fileId: session.fileId, fileName: session.fileName } : null}
             />
           )}
           {result.viewer === 'office-word' && (
-            <WordViewer
+            <WordViewer source={result.source} meta={result.meta} fileId={session.fileId} fileName={session.fileName} onReady={onViewerReady} />
+          )}
+          {result.viewer === 'office-sheet' && (
+            <SheetViewer source={result.source} meta={result.meta} fileId={session.fileId} fileName={session.fileName} onReady={onViewerReady} />
+          )}
+          {result.viewer === 'office-slides' && (
+            <SlidesViewer
               source={result.source}
               meta={result.meta}
               fileId={session.fileId}
+              fileName={session.fileName}
+              onProgress={onViewerLoading}
               onReady={onViewerReady}
-              editing={editing}
             />
-          )}
-          {result.viewer === 'office-sheet' && (
-            <SheetViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
-          )}
-          {result.viewer === 'office-slides' && (
-            <SlidesViewer source={result.source} meta={result.meta} onProgress={onViewerLoading} onReady={onViewerReady} />
           )}
           {result.viewer === 'image' && (
             <ImageViewer source={result.source} onReady={onViewerReady} onThumbnail={onThumbnail} />
@@ -205,16 +232,14 @@ function ViewerHeader({
   job,
   onDelete,
   deleting,
-  revision,
 }: {
   session: Session;
   job: JobState | null;
   onDelete: () => void;
   deleting: boolean;
-  /** Bumped by page edits; the download must be the edited file. */
-  revision: number;
 }) {
   const format = job?.format;
+  const { t } = useT();
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-ink-850 px-3 sm:px-4">
       <Logo compact />
@@ -238,11 +263,11 @@ function ViewerHeader({
       <div className="flex shrink-0 items-center gap-1">
         {session.fileId && (
           <a
-            href={apiUrl(withRevision(`/api/v1/files/${session.fileId}/raw?download=1`, revision))}
+            href={apiUrl(`/api/v1/files/${session.fileId}/raw?download=1`)}
             download={session.fileName}
             className="btn-icon"
-            title="Download the original file"
-            aria-label="Download the original file"
+            title={t('Download the original file')}
+            aria-label={t('Download the original file')}
           >
             <svg viewBox="0 0 20 20" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
               <path d="M10 3v9m0 0 3.5-3.5M10 12 6.5 8.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -256,8 +281,8 @@ function ViewerHeader({
             onClick={onDelete}
             disabled={deleting}
             className="btn-icon"
-            title="Delete this document from the server now"
-            aria-label="Delete this document from the server now"
+            title={t('Delete this document from the server now')}
+            aria-label={t('Delete this document from the server now')}
           >
             <svg viewBox="0 0 20 20" className="h-[18px] w-[18px]" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
               <path d="M4 6h12M8.5 6V4.5h3V6M6 6l.7 9.1a1.5 1.5 0 0 0 1.5 1.4h3.6a1.5 1.5 0 0 0 1.5-1.4L15 6" strokeLinecap="round" strokeLinejoin="round" />
@@ -268,8 +293,9 @@ function ViewerHeader({
           <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
             <path d="M8 3.5v9M3.5 8h9" strokeLinecap="round" />
           </svg>
-          <span className="hidden sm:inline">Workspace</span>
+          <span className="hidden sm:inline">{t('Workspace')}</span>
         </Link>
+        <HeaderControls className="ml-1" />
       </div>
     </header>
   );

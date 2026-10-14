@@ -50,18 +50,24 @@ export async function openFixture(page: Page, name: string, options: { expectErr
  * workspace listens on the window, so anywhere on the page counts.
  */
 export async function dropFile(page: Page, name: string, target = 'body') {
-  const bytes = await readFile(fixture(name));
-  const dataTransfer = await page.evaluateHandle(
-    ({ data, fileName }) => {
+  await dropFiles(page, [name], target);
+}
+
+/** Several files in one drop, as when a selection is dragged from Explorer. */
+export async function dropFiles(page: Page, names: string[], target = 'body') {
+  const files = await Promise.all(
+    names.map(async (fileName) => ({ fileName, data: (await readFile(fixture(fileName))).toString('base64') })),
+  );
+  const dataTransfer = await page.evaluateHandle((list) => {
+    const transfer = new DataTransfer();
+    for (const { data, fileName } of list) {
       const binary = atob(data);
       const buffer = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i += 1) buffer[i] = binary.charCodeAt(i);
-      const transfer = new DataTransfer();
       transfer.items.add(new File([buffer], fileName));
-      return transfer;
-    },
-    { data: bytes.toString('base64'), fileName: name },
-  );
+    }
+    return transfer;
+  }, files);
   await page.locator(target).first().dispatchEvent('drop', { dataTransfer });
 }
 

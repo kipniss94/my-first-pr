@@ -189,21 +189,6 @@ export async function patchDocument(id: string, patch: Partial<CachedDocument>):
   emit();
 }
 
-/**
- * Swap in an edited version of a document's bytes, keeping its card.
- *
- * Reopening from the workspace re-uploads these bytes, so after a page is
- * deleted they must be the edited file — otherwise the deleted page would come
- * back the next time the card is opened. The thumbnail is cleared so the
- * viewer captures it again from the new first page.
- */
-export async function replaceDocumentBlob(id: string, blob: Blob): Promise<void> {
-  const current = await getDocument(id);
-  if (!current) return;
-  const stored = await run(BLOBS, 'readwrite', (tx) => tx.objectStore(BLOBS).put({ id, blob }));
-  await patchDocument(id, { size: blob.size, thumbnail: null, hasBlob: stored !== null });
-}
-
 export function touchDocument(id: string): Promise<void> {
   return patchDocument(id, { openedAt: Date.now() });
 }

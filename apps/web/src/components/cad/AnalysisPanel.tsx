@@ -1,6 +1,7 @@
 'use client';
 
-import { formatAngle, formatLength } from '@/lib/format';
+import { formatAngle, formatArea, formatLength } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import type { CadModel, MeasurementRecord, SectionState, ToolMode } from '@/lib/cad/types';
 import { PanelSection, Row } from './PropertiesPanel';
 
@@ -25,52 +26,68 @@ interface AnalysisPanelProps {
 
 const TOOL_HELP: Record<ToolMode, string> = {
   select: 'Click a part to select it. On STEP and IGES models the individual B-Rep face you click is highlighted too.',
+  measure:
+    'Click one or two faces, edges or vertices. Space or the wheel over the dimension switches its variant; Enter keeps it.',
   'measure-distance': 'Click two points. Clicks snap to the nearest vertex when one is close.',
-  'measure-length': 'Click on a model edge to measure its full straight length.',
   'measure-angle': 'Click three points: the second one is the corner.',
 };
 
+/** A kept dimension's value as a drawing writes it. */
+function valueText(measurement: MeasurementRecord, units: string): string {
+  switch (measurement.kind) {
+    case 'angle':
+      return formatAngle(measurement.value);
+    case 'diameter':
+      return `Ø ${formatLength(measurement.value, units)}`;
+    case 'radius':
+      return `R ${formatLength(measurement.value, units)}`;
+    case 'area':
+      return formatArea(measurement.value, units);
+    case 'coords':
+      return measurement.detail.map((entry) => `${entry.key} ${entry.value}`).join('  ');
+    default:
+      return formatLength(measurement.value, units);
+  }
+}
+
 export function AnalysisPanel(props: AnalysisPanelProps) {
   const { model, tool, section, measurements } = props;
+  const { t } = useT();
 
   return (
     <div className="min-h-0 flex-1 overflow-auto" data-testid="analysis-panel">
-      <PanelSection title="Measure">
+      <PanelSection title={t('Measure')}>
         <div className="grid grid-cols-2 gap-1.5">
-          <ToolButton label="Select" active={tool === 'select'} onClick={() => props.onToolChange('select')} />
+          <ToolButton label={t('Select')} active={tool === 'select'} onClick={() => props.onToolChange('select')} />
+          <ToolButton label={t('Dimension')} active={tool === 'measure'} onClick={() => props.onToolChange('measure')} />
           <ToolButton
-            label="Distance"
+            label={t('Two points')}
             active={tool === 'measure-distance'}
             onClick={() => props.onToolChange('measure-distance')}
           />
-          <ToolButton
-            label="Edge length"
-            active={tool === 'measure-length'}
-            onClick={() => props.onToolChange('measure-length')}
-          />
-          <ToolButton label="Angle" active={tool === 'measure-angle'} onClick={() => props.onToolChange('measure-angle')} />
+          <ToolButton label={t('Three-point angle')} active={tool === 'measure-angle'} onClick={() => props.onToolChange('measure-angle')} />
         </div>
-        <p className="pt-2 text-[12px] leading-relaxed text-mist-400">{TOOL_HELP[tool]}</p>
-        {tool !== 'select' && props.pendingPoints > 0 && (
+        <p className="pt-2 text-[12px] leading-relaxed text-mist-400">{t(TOOL_HELP[tool])}</p>
+        {(tool === 'measure-distance' || tool === 'measure-angle') && props.pendingPoints > 0 && (
           <p className="pt-1 font-mono text-[12px] text-measure">
-            {props.pendingPoints} point{props.pendingPoints === 1 ? '' : 's'} picked
+            {t('Points picked: {n}', { n: props.pendingPoints })}
           </p>
         )}
       </PanelSection>
 
-      <PanelSection title="Bounding box">
+      <PanelSection title={t('Bounding box')}>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Show</span>
-          <Switch checked={props.boundingBoxVisible} onChange={props.onBoundingBoxToggle} label="Show bounding box" />
+          <span className="text-[13px] text-mist-200">{t('Show')}</span>
+          <Switch checked={props.boundingBoxVisible} onChange={props.onBoundingBoxToggle} label={t('Show bounding box')} />
         </label>
         <div className="flex gap-1.5 py-1">
           <ToolButton
-            label="Whole model"
+            label={t('Whole model')}
             active={props.boundingBoxScope === 'model'}
             onClick={() => props.onBoundingBoxScope('model')}
           />
           <ToolButton
-            label="Selection"
+            label={t('Selection')}
             active={props.boundingBoxScope === 'selection'}
             disabled={!props.hasSelection}
             onClick={() => props.onBoundingBoxScope('selection')}
@@ -79,16 +96,16 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
         <Row label="X" value={formatLength(props.bounds.size.x, model.units)} />
         <Row label="Y" value={formatLength(props.bounds.size.y, model.units)} />
         <Row label="Z" value={formatLength(props.bounds.size.z, model.units)} />
-        <Row label="Diagonal" value={formatLength(props.bounds.diagonal, model.units)} />
+        <Row label={t('Diagonal')} value={formatLength(props.bounds.diagonal, model.units)} />
       </PanelSection>
 
-      <PanelSection title="Section plane">
+      <PanelSection title={t('Section plane')}>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Enabled</span>
+          <span className="text-[13px] text-mist-200">{t('Enabled')}</span>
           <Switch
             checked={section.enabled}
             onChange={(enabled) => props.onSectionChange({ enabled })}
-            label="Enable section plane"
+            label={t('Enable section plane')}
             testId="section-toggle"
           />
         </label>
@@ -107,7 +124,7 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
 
         <div className="py-1.5">
           <div className="flex items-baseline justify-between">
-            <span className="kv-key">Position</span>
+            <span className="kv-key">{t('Position')}</span>
             <span className="kv-value">{formatLength(props.sectionCoordinate, model.units)}</span>
           </div>
           <input
@@ -119,47 +136,47 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
             disabled={!section.enabled}
             onChange={(event) => props.onSectionChange({ position: Number(event.target.value) })}
             className="mt-2 w-full accent-accent disabled:opacity-40"
-            aria-label="Section plane position"
+            aria-label={t('Section plane position')}
             data-testid="section-position"
           />
         </div>
 
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Flip direction</span>
+          <span className="text-[13px] text-mist-200">{t('Flip direction')}</span>
           <Switch
             checked={section.flipped}
             disabled={!section.enabled}
             onChange={(flipped) => props.onSectionChange({ flipped })}
-            label="Flip section direction"
+            label={t('Flip section direction')}
           />
         </label>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Cap cut surface</span>
+          <span className="text-[13px] text-mist-200">{t('Cap cut surface')}</span>
           <Switch
             checked={section.showCap}
             disabled={!section.enabled}
             onChange={(showCap) => props.onSectionChange({ showCap })}
-            label="Cap the cut surface"
+            label={t('Cap the cut surface')}
           />
         </label>
         <label className="flex items-center justify-between gap-3 py-1">
-          <span className="text-[13px] text-mist-200">Hatch</span>
+          <span className="text-[13px] text-mist-200">{t('Hatch')}</span>
           <Switch
             checked={section.hatch}
             disabled={!section.enabled || !section.showCap}
             onChange={(hatch) => props.onSectionChange({ hatch })}
-            label="Hatch the cut surface"
+            label={t('Hatch the cut surface')}
           />
         </label>
         <p className="pt-1.5 text-[12px] leading-relaxed text-mist-500">
-          The cap is computed from the solid itself, so hollow parts stay hollow in the cut.
+          {t('The cap is computed from the solid itself, so hollow parts stay hollow in the cut.')}
         </p>
       </PanelSection>
 
-      <PanelSection title={`Measurements${measurements.length > 0 ? ` (${measurements.length})` : ''}`}>
+      <PanelSection title={`${t('Measurements')}${measurements.length > 0 ? ` (${measurements.length})` : ''}`}>
         {measurements.length === 0 ? (
           <p className="text-[13px] leading-relaxed text-mist-500">
-            Nothing measured yet. Pick a measure tool above and click in the 3D view.
+            {t('Nothing measured yet. Pick a measure tool above and click in the 3D view.')}
           </p>
         ) : (
           <>
@@ -167,12 +184,12 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
               {measurements.map((measurement) => (
                 <li key={measurement.id} className="rounded-lg border border-line bg-ink-800 px-2.5 py-2">
                   <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-[12px] text-mist-400">{measurement.label}</span>
+                    <span className="text-[12px] text-mist-400">{t(measurement.label)}</span>
                     <button
                       type="button"
                       className="btn-icon !p-1"
                       onClick={() => props.onRemoveMeasurement(measurement.id)}
-                      aria-label={`Remove ${measurement.label}`}
+                      aria-label={t('Remove {name}', { name: t(measurement.label) })}
                     >
                       <svg viewBox="0 0 12 12" className="h-3 w-3" aria-hidden="true">
                         <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -180,11 +197,9 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
                     </button>
                   </div>
                   <p className="font-mono text-[15px] font-medium tabular-nums text-measure">
-                    {measurement.kind === 'angle'
-                      ? formatAngle(measurement.value)
-                      : formatLength(measurement.value, model.units)}
+                    {valueText(measurement, model.units)}
                   </p>
-                  {measurement.detail.length > 0 && (
+                  {measurement.kind !== 'coords' && measurement.detail.length > 0 && (
                     <dl className="mt-1.5 grid grid-cols-3 gap-x-2">
                       {measurement.detail.map((entry) => (
                         <div key={entry.key}>
@@ -198,7 +213,7 @@ export function AnalysisPanel(props: AnalysisPanelProps) {
               ))}
             </ul>
             <button type="button" onClick={props.onClearMeasurements} className="btn btn-ghost mt-3 w-full">
-              Clear all
+              {t('Clear all')}
             </button>
           </>
         )}
@@ -262,7 +277,7 @@ function Switch({
       }`}
     >
       <span
-        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+        className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
           checked ? 'translate-x-[18px]' : 'translate-x-0.5'
         }`}
       />

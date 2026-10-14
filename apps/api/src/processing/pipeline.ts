@@ -129,6 +129,7 @@ export async function runPipeline(job: JobRecord, report: ProgressReporter): Pro
       dwgConverterCmd: config.dwgConverterCmd,
       cadConverterCmd: config.cadConverterCmd,
       timeoutMs: config.processingTimeoutMs,
+      configurations: job.input.configurations,
     },
   };
 
@@ -150,11 +151,20 @@ export async function runPipeline(job: JobRecord, report: ProgressReporter): Pro
 function attachAssembly(job: JobRecord, result: JobResult): void {
   const names = result.meta.componentNames;
   if (result.meta.role !== 'assembly' || !Array.isArray(names) || names.length === 0) return;
+  const configurations = (result.meta.componentConfigurations ?? {}) as Record<string, string[]>;
+  const paths = (result.meta.referencedPaths ?? {}) as Record<string, string>;
   job.assembly = {
     role: 'assembly',
     components: names
       .filter((name): name is string => typeof name === 'string')
-      .map((name) => ({ name, status: 'missing' as const, jobId: null, fileId: null })),
+      .map((name) => ({
+        name,
+        status: 'missing' as const,
+        jobId: null,
+        fileId: null,
+        configurations: configurations[name.toLowerCase()] ?? [],
+        ...(paths[name.toLowerCase()] ? { originalPath: paths[name.toLowerCase()] } : {}),
+      })),
     updatedAt: new Date().toISOString(),
   };
 }

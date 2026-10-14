@@ -7,8 +7,11 @@ import { ACCEPTED_EXTENSIONS, type CapabilitiesResponse } from '@docuview/shared
 import { getCapabilities } from '@/lib/api';
 import { clearDocuments, removeDocument, useCachedDocuments, type CachedDocument } from '@/lib/cache';
 import { formatBytes, formatDuration } from '@/lib/format';
-import { openCachedDocument, startUpload } from '@/lib/session';
+import { droppedFiles, FALLBACK_MAX_BYTES, openFiles } from '@/lib/open';
+import { useT } from '@/lib/prefs';
+import { openCachedDocument } from '@/lib/session';
 import { AdSlot } from '@/components/site/AdSlot';
+import { HeaderControls } from '@/components/site/HeaderControls';
 import { Logo } from '@/components/site/SiteChrome';
 import { DocumentCard } from './DocumentCard';
 
@@ -23,16 +26,12 @@ import { DocumentCard } from './DocumentCard';
  */
 
 const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.join(',');
-const FALLBACK_MAX_BYTES = 250 * 1024 * 1024;
-
-function extensionOf(name: string): string {
-  return /\.([A-Za-z0-9_]{1,12})$/.exec(name)?.[1].toLowerCase() ?? '';
-}
 
 export function Workspace() {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const { documents, loading } = useCachedDocuments();
+  const { t, tp, tx } = useT();
 
   const [capabilities, setCapabilities] = useState<CapabilitiesResponse | null>(null);
   const [serviceDown, setServiceDown] = useState(false);
@@ -57,34 +56,33 @@ export function Workspace() {
 
   /* ------------------------------ opening -------------------------------- */
 
-  const openFile = useCallback(
-    (file: File | undefined) => {
-      if (!file) return;
+  // Any number of files, a folder too: each opens in its own tab, and an
+  // assembly takes the parts it is made of instead (see lib/open).
+  const openMany = useCallback(
+    async (files: File[], fromFolder = false) => {
+      if (files.length === 0) return;
       setError(null);
-
-      if (file.size === 0) {
-        setError({ message: `“${file.name}” is empty.`, hint: 'Pick a file that has content in it.' });
-        return;
-      }
-      if (file.size > maxBytes) {
-        setError({
-          message: `“${file.name}” is ${formatBytes(file.size)}, over the ${formatBytes(maxBytes)} limit.`,
-          hint: 'Try a compressed or simplified export.',
-        });
-        return;
-      }
-      const extension = extensionOf(file.name);
-      if (extension && !ACCEPTED_EXTENSIONS.includes(`.${extension}`)) {
-        setError({
-          message: `We can’t open “.${extension}” files yet.`,
-          hint: 'CAD, 3D, PDF, Office and image formats are supported.',
-        });
-        return;
-      }
-
-      router.push(`/viewer?s=${startUpload(file)}`);
+      const outcome = await openFiles(files, {
+        maxBytes,
+        fromFolder,
+        navigate: (sessionId, replace) =>
+          replace ? router.replace(`/viewer?s=${sessionId}`) : router.push(`/viewer?s=${sessionId}`),
+      });
+      if (outcome.opened.length > 0 || outcome.refused.length === 0) return;
+      setError(
+        outcome.refused.length === 1
+          ? { message: t(outcome.refused[0].message), hint: outcome.refused[0].hint && t(outcome.refused[0].hint) }
+          : {
+              message: tp(
+                outcome.refused.length,
+                ['The file could not be opened.', 'None of the {n} files could be opened.'],
+                ['Файл не удалось открыть.', 'Ни один из {n} файлов не удалось открыть.', 'Ни один из {n} файлов не удалось открыть.'],
+              ),
+              hint: outcome.refused.map((r) => t(r.message)).join(' '),
+            },
+      );
     },
-    [maxBytes, router],
+    [maxBytes, router, t, tp],
   );
 
   const openCached = useCallback(
@@ -98,14 +96,14 @@ export function Workspace() {
           return;
         }
         setError({
-          message: `“${document.name}” is no longer in this browser’s cache.`,
-          hint: 'Drop the file again to reopen it.',
+          message: t('“{name}” is no longer in this browser’s cache.', { name: document.name }),
+          hint: t('Drop the file again to reopen it.'),
         });
       } finally {
         setOpening(null);
       }
     },
-    [router],
+    [router, t],
   );
 
   /* --------------------------- drop anywhere ------------------------------ */
@@ -129,16 +127,7 @@ export function Workspace() {
       event.preventDefault();
       dragDepth.current = 0;
       setDragging(false);
-      const files = event.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-      if (files.length > 1) {
-        setError({
-          message: 'One document at a time, please.',
-          hint: 'Assembly components are added from inside the viewer once the assembly is open.',
-        });
-        return;
-      }
-      openFile(files[0]);
+      void droppedFiles(event.dataTransfer).then(({ files, fromFolder }) => openMany(files, fromFolder));
     };
 
     window.addEventListener('dragenter', onDragEnter);
@@ -151,7 +140,7 @@ export function Workspace() {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [openFile]);
+  }, [openMany]);
 
   /* -------------------------------- view ---------------------------------- */
 
@@ -171,12 +160,12 @@ export function Workspace() {
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-ink-850 px-4">
         <Logo />
         <div className="mx-1 hidden h-5 w-px bg-line sm:block" />
-        <p className="hidden text-[13px] text-mist-400 sm:block">Workspace</p>
+        <p className="hidden text-[13px] text-mist-400 sm:block">{t('Workspace')}</p>
 
         <div className="ml-auto flex items-center gap-2">
           {documents.length > 0 && (
             <label className="relative hidden sm:block">
-              <span className="sr-only">Filter documents</span>
+              <span className="sr-only">{t('Filter documents')}</span>
               <svg
                 viewBox="0 0 16 16"
                 aria-hidden="true"
@@ -192,7 +181,7 @@ export function Workspace() {
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter"
+                placeholder={t('Filter')}
                 data-testid="workspace-filter"
                 className="h-8 w-40 rounded-lg border border-line bg-ink-900 pl-8 pr-2.5 text-[13px] text-mist-100 placeholder:text-mist-500 focus:border-accent/60 focus:outline-none"
               />
@@ -202,8 +191,9 @@ export function Workspace() {
             <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
               <path d="M8 3.5v9M3.5 8h9" strokeLinecap="round" />
             </svg>
-            Open a file
+            {t('Open a file')}
           </button>
+          <HeaderControls />
         </div>
       </header>
 
@@ -220,10 +210,11 @@ export function Workspace() {
         {serviceDown && (
           <div role="alert" className="mx-auto mt-4 w-full max-w-3xl px-4">
             <div className="rounded-xl border border-warn/35 bg-warn/10 px-4 py-3">
-              <p className="text-sm font-medium text-mist-100">The document service isn’t responding.</p>
+              <p className="text-sm font-medium text-mist-100">{t('The document service isn’t responding.')}</p>
               <p className="mt-1 text-[13px] text-mist-400">
-                Start it with <code className="font-mono text-mist-300">npm run dev</code>, which runs both halves of
-                the app.
+                {tx('Start it with {command}, which runs both halves of the app.', {
+                  command: <code className="font-mono text-mist-300">Start-DocuView.bat</code>,
+                })}
               </p>
             </div>
           </div>
@@ -258,13 +249,13 @@ export function Workspace() {
                       <path d="M12 6v12M6 12h12" strokeLinecap="round" />
                     </svg>
                   </span>
-                  <span className="block truncate text-[13px] font-medium text-mist-400">Open a file</span>
+                  <span className="block truncate text-[13px] font-medium text-mist-400">{t('Open a file')}</span>
                 </button>
               </li>
             </ul>
 
             {visible.length === 0 && (
-              <p className="mt-8 text-center text-sm text-mist-500">Nothing here matches “{query}”.</p>
+              <p className="mt-8 text-center text-sm text-mist-500">{t('Nothing here matches “{query}”.', { query })}</p>
             )}
           </section>
         )}
@@ -273,14 +264,25 @@ export function Workspace() {
       </main>
 
       <footer className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t border-line bg-ink-850 px-4 py-2.5 text-[11px] text-mist-500">
-        <span>Up to {formatBytes(maxBytes)} per file</span>
+        <span>{t('Up to {size} per file', { size: formatBytes(maxBytes) })}</span>
         <span aria-hidden="true">·</span>
-        <span>Deleted from the server after {formatDuration(capabilities?.retentionSeconds ?? 3600)}</span>
+        <span>
+          {t('Deleted from the server after {time}', { time: formatDuration(capabilities?.retentionSeconds ?? 3600) })}
+        </span>
         {documents.length > 0 && (
           <>
             <span aria-hidden="true">·</span>
             <span>
-              {documents.length} here, {formatBytes(cachedBytes)} kept in this browser
+              {tp(
+                documents.length,
+                ['{n} here, {size} kept in this browser', '{n} here, {size} kept in this browser'],
+                [
+                  '{n} документ, {size} хранится в этом браузере',
+                  '{n} документа, {size} хранится в этом браузере',
+                  '{n} документов, {size} хранится в этом браузере',
+                ],
+                { size: formatBytes(cachedBytes) },
+              )}
             </span>
             <button
               type="button"
@@ -288,19 +290,19 @@ export function Workspace() {
               data-testid="clear-workspace"
               className="link-quiet underline underline-offset-2"
             >
-              Clear
+              {t('Clear')}
             </button>
           </>
         )}
-        <nav aria-label="Site" className="ml-auto flex items-center gap-3">
+        <nav aria-label={t('Site')} className="ml-auto flex items-center gap-3">
           <Link href="/about" className="link-quiet">
-            About
+            {t('About')}
           </Link>
           <Link href="/privacy" className="link-quiet">
-            Privacy
+            {t('Privacy')}
           </Link>
           <Link href="/terms" className="link-quiet">
-            Terms
+            {t('Terms')}
           </Link>
         </nav>
       </footer>
@@ -313,10 +315,11 @@ export function Workspace() {
         ref={inputRef}
         type="file"
         accept={ACCEPT_ATTRIBUTE}
+        multiple
         className="sr-only"
         data-testid="file-input"
         onChange={(event) => {
-          openFile(event.target.files?.[0]);
+          void openMany(Array.from(event.target.files ?? []));
           event.target.value = '';
         }}
       />
@@ -327,6 +330,7 @@ export function Workspace() {
 /* ------------------------------- empty state ------------------------------- */
 
 function EmptyDesktop({ onBrowse }: { onBrowse(): void }) {
+  const { t } = useT();
   return (
     <div className="flex min-h-full flex-col items-center justify-center px-6 py-16 text-center">
       <button
@@ -342,11 +346,12 @@ function EmptyDesktop({ onBrowse }: { onBrowse(): void }) {
           </svg>
         </span>
         <span className="mt-6 text-xl font-semibold tracking-tight text-mist-100 sm:text-2xl">
-          Drop a document anywhere
+          {t('Drop a document anywhere')}
         </span>
         <span className="mt-2 max-w-md text-sm leading-relaxed text-mist-400">
-          CAD, 3D, PDF, Word, Excel, PowerPoint and images. The format is read from the file itself — you never
-          pick a viewer.
+          {t(
+            'CAD, 3D, PDF, Word, Excel, PowerPoint and images. The format is read from the file itself — you never pick a viewer.',
+          )}
         </span>
       </button>
     </div>
@@ -354,6 +359,7 @@ function EmptyDesktop({ onBrowse }: { onBrowse(): void }) {
 }
 
 function DropOverlay() {
+  const { t } = useT();
   return (
     <div
       aria-hidden="true"
@@ -361,8 +367,8 @@ function DropOverlay() {
       className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-ink-950/70 backdrop-blur-sm"
     >
       <div className="rounded-2xl border-2 border-dashed border-accent bg-ink-900/90 px-12 py-10 text-center">
-        <p className="text-lg font-semibold text-mist-100">Drop to open</p>
-        <p className="mt-1 text-sm text-mist-400">We’ll work out what it is.</p>
+        <p className="text-lg font-semibold text-mist-100">{t('Drop to open')}</p>
+        <p className="mt-1 text-sm text-mist-400">{t('One file or many. An assembly takes its parts along.')}</p>
       </div>
     </div>
   );

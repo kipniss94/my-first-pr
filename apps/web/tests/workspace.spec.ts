@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { fixture, openFixture, watchConsole } from './helpers';
+import { dropFile, dropFiles, fixture, openFixture, watchConsole } from './helpers';
 
 /**
  * The workspace is meant to be the whole product: drop a file, it opens; come
@@ -107,5 +107,76 @@ test.describe('native CAD', () => {
     // Once it is ready the viewer switches from the picture to real geometry.
     await expect(page.locator('[data-testid="cad-canvas"] canvas')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText('Geometry', { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+  });
+});
+
+/**
+ * Many files at once: each opens in its own tab, one after another, and
+ * files that belong together are put together rather than opened apart.
+ */
+test.describe('opening many files', () => {
+  test('several files dropped together open one after another, each in a tab', async ({ page }) => {
+    const errors = watchConsole(page);
+    await page.goto('/');
+    await dropFiles(page, ['cube-ascii.stl', 'stepped-block.stl', 'report.pdf']);
+    await page.waitForURL(/\/viewer/, { timeout: 20_000 });
+
+    const tabs = page.getByTestId('viewer-tab');
+    await expect(tabs).toHaveCount(3, { timeout: 30_000 });
+    await expect(tabs.nth(0)).toContainText('cube-ascii.stl');
+    await expect(tabs.nth(2)).toContainText('report.pdf');
+    await expect(page.getByTestId('file-name')).toContainText('cube-ascii.stl');
+
+    // One click moves between them.
+    await tabs.nth(1).click();
+    await expect(page.getByTestId('file-name')).toContainText('stepped-block.stl');
+    await expect(page.getByTestId('stage-rail')).toHaveCount(0, { timeout: 60_000 });
+
+    // Closing the one on screen shows its neighbour.
+    await page.getByRole('button', { name: 'Close stepped-block.stl' }).click();
+    await expect(tabs).toHaveCount(2);
+    await expect(page.getByTestId('file-name')).not.toContainText('stepped-block.stl');
+    expect(errors).toEqual([]);
+  });
+
+  test('a file dropped on an open document opens beside it, even after a failure', async ({ page }) => {
+    await openFixture(page, 'broken.step', { expectError: true });
+    await dropFile(page, 'cube-ascii.stl');
+
+    const tabs = page.getByTestId('viewer-tab');
+    await expect(tabs).toHaveCount(2, { timeout: 30_000 });
+    await expect(page.getByTestId('file-name')).toContainText('cube-ascii.stl');
+    await expect(page.getByTestId('stage-rail')).toHaveCount(0, { timeout: 60_000 });
+    await expect(tabs.nth(0)).toContainText('broken.step');
+  });
+
+  test('an assembly dropped with its parts takes them in and names what is missing', async ({ page }) => {
+    await page.goto('/');
+    await dropFiles(page, ['frame.sldasm', 'bracket.sldprt', 'cube-ascii.stl']);
+    await page.waitForURL(/\/viewer/, { timeout: 20_000 });
+
+    // The part the assembly names goes into it; the unrelated one opens apart.
+    const report = page.getByTestId('open-report');
+    await expect(report).toContainText('frame.sldasm', { timeout: 60_000 });
+    await expect(page.getByTestId('open-report-missing')).toContainText('pin_8x40.SLDPRT');
+    await expect(page.getByTestId('open-report-missing')).not.toContainText('bracket.sldprt');
+
+    const tabs = page.getByTestId('viewer-tab');
+    await expect(tabs).toHaveCount(2);
+    await expect(tabs.nth(0)).toContainText('frame.sldasm');
+    await expect(tabs.nth(1)).toContainText('cube-ascii.stl');
+    await expect(tabs.filter({ hasText: 'bracket.sldprt' })).toHaveCount(0);
+
+    // The assembly's own list shows the part as supplied, and offers ways to
+    // find the ones still missing.
+    await tabs.nth(0).click();
+    const list = page.getByTestId('component-list');
+    await expect(list).toBeVisible({ timeout: 30_000 });
+    const bracket = page.getByTestId('component-row').filter({ hasText: 'bracket.sldprt' });
+    await expect(bracket).not.toContainText('Missing', { timeout: 30_000 });
+    const pin = page.getByTestId('component-row').filter({ hasText: 'pin_8x40.SLDPRT' });
+    await expect(pin.getByTestId('component-locate')).toBeVisible();
+    await expect(pin.getByTestId('component-copy')).toBeVisible();
+    await expect(pin.getByTestId('component-explorer')).toHaveAttribute('href', /^search-ms:query=pin_8x40\.SLDPRT/);
   });
 });

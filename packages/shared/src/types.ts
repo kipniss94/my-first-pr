@@ -132,6 +132,7 @@ export type ViewerId =
   | 'cad-nmg' // server-normalized geometry (STEP/IGES/BREP)
   | 'cad-dxf' // 2D DXF vector viewer
   | 'cad-preview' // native CAD opened from its stored preview and properties
+  | 'cad-drawing' // a CAD drawing: its sheets as vector SVG
   | 'pdf'
   | 'office-word'
   | 'office-sheet'
@@ -189,6 +190,11 @@ export interface NmgMesh {
    * instead of the whole solid. Absent for mesh-native formats.
    */
   faceRanges?: number[];
+  /**
+   * Per face range, its sRGB hex colour — present only when the faces are not
+   * all the colour of the mesh. `null` takes `color`.
+   */
+  faceColors?: (string | null)[];
 }
 
 export interface NmgNode {
@@ -339,6 +345,10 @@ export interface AssemblyComponent {
   /** Job that is preparing this component, once one has been supplied. */
   jobId: string | null;
   fileId: string | null;
+  /** Configurations of this part the assembly uses, so each can be drawn as used. */
+  configurations?: string[];
+  /** Where SolidWorks had the file when the assembly was saved. */
+  originalPath?: string;
 }
 
 export interface AssemblyState {
@@ -351,6 +361,29 @@ export interface AssemblyState {
 export type NativeCadRole = 'part' | 'assembly' | 'drawing' | 'unknown';
 
 /**
+ * Where one occurrence of a component sits in an assembly.
+ *
+ * An assembly names each part file once per place it is used, with the
+ * transform SolidWorks keeps for it; sub-assemblies are already opened up, so
+ * every entry is a part, placed relative to the top-level assembly.
+ */
+export interface AssemblyPlacement {
+  /** Part file the geometry comes from, as the assembly names it. */
+  component: string;
+  /** Configuration of that part used here. */
+  configuration: string;
+  /** Instance names from the top of the tree down, e.g. `["Frame-1", "Bolt-3"]`. */
+  path: string[];
+  /** 4×4 placement, column-major (three.js `Matrix4.fromArray` order), in millimetres. */
+  matrix: number[];
+  /**
+   * The mesh in `storedGeometry` the assembly keeps of this part, in the part's
+   * own coordinates: drawn here while the part's file is not at hand.
+   */
+  stored?: number;
+}
+
+/**
  * A proprietary CAD document opened without its vendor kernel.
  *
  * `geometry` says plainly what is behind the picture: `preview-only` means the
@@ -358,6 +391,32 @@ export type NativeCadRole = 'part' | 'assembly' | 'drawing' | 'unknown';
  * is configured the document never reaches this shape at all — it goes through
  * the normal STEP path instead.
  */
+/** One sheet of a CAD drawing, drawn from the file. */
+export interface DrawingSheetDocument {
+  name: string;
+  widthMm: number;
+  heightMm: number;
+  /** The sheet as SVG, millimetres, top-left origin. */
+  svg: string;
+  /** The picture the CAD system saved of the sheet, for comparison. */
+  picture: string | null;
+  views: number;
+  /** Views drawn from their own edges. */
+  viewsDrawn: number;
+  /** Views shown from the saved picture, their edges not placeable yet. */
+  viewsFromPicture: number;
+  active: boolean;
+}
+
+/** A CAD drawing (SolidWorks .SLDDRW) read without the CAD system. */
+export interface DrawingDocument {
+  application: string;
+  version: string | null;
+  sheets: DrawingSheetDocument[];
+  properties: { name: string; value: string }[];
+  note: string;
+}
+
 export interface NativeCadDocument {
   application: string;
   version: string | null;
@@ -382,4 +441,71 @@ export interface NativeCadDocument {
   } | null;
   /** One paragraph, shown verbatim in the viewer. */
   note: string;
+  /**
+   * For an assembly whose placements could be read: every part occurrence
+   * whose geometry comes from a separate file, with its transform.
+   */
+  placements?: AssemblyPlacement[];
+  /**
+   * Geometry the assembly carries itself — components saved inside it
+   * (virtual components) — already placed, as an NMG manifest URL.
+   */
+  geometry3d?: string | null;
+  /**
+   * The graphics the assembly keeps of the parts in their own files, one mesh
+   * per part, each in the part's own coordinates (NMG manifest URL); a
+   * placement's `stored` names its mesh.
+   */
+  storedGeometry?: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Editing Office documents                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * What of a Word, Excel or PowerPoint file can be edited, read from the file
+ * itself. Edits go back as `DocumentEdits` and are written into the original
+ * XML, so everything not edited — styles, pictures, layout — stays as it was.
+ */
+export type EditableDocument = DocxEditable | XlsxEditable | PptxEditable;
+
+export interface EditableParagraph {
+  /** Position among all the document's paragraphs, in document order. */
+  id: number;
+  text: string;
+  style: 'title' | 'heading1' | 'heading2' | 'heading3' | 'list' | 'body';
+}
+
+export type DocxBlock =
+  | { type: 'paragraph'; block: number; page: number; paragraph: EditableParagraph; locked: boolean }
+  | { type: 'table'; block: number; page: number; rows: EditableParagraph[][][] }
+  | { type: 'group'; block: number; page: number; paragraphs: EditableParagraph[] };
+
+export interface DocxEditable {
+  kind: 'docx';
+  blocks: DocxBlock[];
+  pages: number;
+  /** Where the page numbers come from: Word's own last layout, or explicit breaks only. */
+  pagesFrom: 'layout' | 'breaks' | 'none';
+}
+
+export interface XlsxEditable {
+  kind: 'xlsx';
+  sheets: string[];
+}
+
+export interface PptxEditable {
+  kind: 'pptx';
+  slides: {
+    index: number;
+    title: string | null;
+    shapes: { id: string; name: string; paragraphs: string[] }[];
+  }[];
+}
+
+export interface DocumentEdits {
+  docx?: { paragraphs?: { id: number; text: string }[]; deleteBlocks?: number[] };
+  xlsx?: { cells?: { sheet: string; ref: string; value: string }[]; deleteSheets?: string[] };
+  pptx?: { texts?: { slide: number; shape: string; paragraph: number; text: string }[]; deleteSlides?: number[] };
 }

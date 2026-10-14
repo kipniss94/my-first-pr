@@ -19,13 +19,20 @@ async function main() {
   const candidates = ['legacy/build/pdf.worker.min.mjs', 'legacy/build/pdf.worker.mjs'];
 
   await fs.mkdir(publicDir, { recursive: true });
+  // The font edited PDF text is written in: Liberation Sans has Cyrillic, and
+  // its licence (OFL) travels with it.
+  const fonts = path.join(publicDir, 'fonts');
+  await fs.mkdir(fonts, { recursive: true });
+  for (const name of ['LiberationSans-Regular.ttf', 'LICENSE_LIBERATION']) {
+    await fs.copyFile(path.join(root, 'standard_fonts', name), path.join(fonts, name));
+  }
   for (const candidate of candidates) {
     const source = path.join(root, candidate);
     try {
       await fs.access(source);
       await fs.copyFile(source, path.join(publicDir, 'pdf.worker.min.mjs'));
       const { version } = require('pdfjs-dist/package.json');
-      console.log(`pdf.worker.min.mjs copied from pdfjs-dist ${version}`);
+      console.log(`pdf.worker.min.mjs and the Liberation Sans font copied from pdfjs-dist ${version}`);
       return;
     } catch {
       /* try the next candidate */

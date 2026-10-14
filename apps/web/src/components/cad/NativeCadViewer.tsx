@@ -1,18 +1,24 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AssemblyState, NativeCadDocument } from '@docuview/shared';
-import { apiUrl } from '@/lib/api';
-import { useAssembly, type ComponentView } from '@/lib/assembly';
+import { useEffect, useState } from 'react';
+import { commonFolder, pathSegments, type AssemblyState, type NativeCadDocument } from '@docuview/shared';
+import { apiUrl, fetchApi } from '@/lib/api';
+import { useAssembly } from '@/lib/assembly';
+import { decimal, formatCount, unitLabel } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
+import { ComponentsPanel, type Storage } from './ComponentsPanel';
 
 const CadViewer = dynamic(() => import('./CadViewer').then((m) => m.CadViewer), {
   ssr: false,
-  loading: () => (
-    <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-mist-400">Loading viewer…</div>
-  ),
+  loading: () => <LoadingViewer />,
 });
+
+function LoadingViewer() {
+  const { t } = useT();
+  return <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-mist-400">{t('Loading viewer…')}</div>;
+}
 
 interface NativeCadViewerProps {
   /** URL of the `native.json` the processor wrote. */
@@ -21,6 +27,10 @@ interface NativeCadViewerProps {
   /** Parent job, needed to send components back to the right assembly. */
   jobId: string | null;
   assembly: AssemblyState | null;
+  /** Where SolidWorks had this assembly when it was saved. */
+  recordedPath?: string | null;
+  /** Where it was inside what was dropped, when it came from a folder. */
+  sourcePath?: string | null;
   onProgress(percent: number): void;
   onReady(): void;
   /** Receives the stored preview, which is this document's workspace card. */
@@ -46,15 +56,21 @@ export function NativeCadViewer({
   onProgress,
   onReady,
   onThumbnail,
+  recordedPath = null,
+  sourcePath = null,
 }: NativeCadViewerProps) {
   const [document, setDocument] = useState<NativeCadDocument | null>(null);
   const [failed, setFailed] = useState(false);
-  const { components, renderable, counts, add, rejected, dismissRejected } = useAssembly(jobId, assembly);
+  const { t } = useT();
+  const { components, renderable, counts, add, rejected, dismissRejected } = useAssembly(jobId, assembly, {
+    recorded: recordedPath,
+    here: sourcePath,
+  });
 
   useEffect(() => {
     let cancelled = false;
     onProgress(40);
-    fetch(apiUrl(source))
+    fetchApi(source)
       .then((response) => {
         if (!response.ok) throw new Error('native document unavailable');
         return response.json() as Promise<NativeCadDocument>;
@@ -91,25 +107,59 @@ export function NativeCadViewer({
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center gap-3 text-sm text-mist-400">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink-600 border-t-accent" />
-        Reading the document…
+        {t('Reading the document…')}
       </div>
     );
   }
 
   const isAssembly = document.role === 'assembly' || components.length > 0;
-  const showGeometry = renderable.length > 0;
+  const placed = Boolean(document.placements?.length);
+  // Every occurrence the assembly places, and how many stand in the scene now:
+  // one per placement of a part whose file is open.
+  const occurrences = new Map<string, number>();
+  for (const placement of document.placements ?? []) {
+    const key = placement.component.toLowerCase();
+    occurrences.set(key, (occurrences.get(key) ?? 0) + 1);
+  }
+  const inScene = new Set(renderable.map((component) => component.name.toLowerCase()));
+  const placedCount = (document.placements ?? []).filter((p) => inScene.has(p.component.toLowerCase())).length;
+  const storedCount = document.storedGeometry
+    ? (document.placements ?? []).filter((p) => p.stored !== undefined && !inScene.has(p.component.toLowerCase())).length
+    : 0;
+  // Where the parts were kept when the assembly was saved: the one folder to
+  // choose so that every one of them is found.
+  // Library parts kept on another drive or root (Toolbox fasteners, say) are
+  // left out, or the one folder would shrink to a drive letter.
+  const recorded = recordedPath
+    ? components
+        .map((c) => c.originalPath)
+        .filter((p): p is string => Boolean(p) && commonFolder([recordedPath, p as string]).length >= 2)
+    : [];
+  const root = recordedPath && recorded.length > 0 ? commonFolder([recordedPath, ...recorded]) : [];
+  const storage: Storage | null =
+    root.length >= 2 && recordedPath
+      ? {
+          name: root[root.length - 1],
+          levelsUp: pathSegments(recordedPath).length - 1 - root.length,
+          depth: root.length,
+          path: root,
+        }
+      : null;
+  const showGeometry = renderable.length > 0 || Boolean(document.geometry3d) || Boolean(document.storedGeometry);
 
   return (
     <div className="flex min-h-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col bg-[#0e131b]">
+      <div className="flex min-w-0 flex-1 flex-col bg-[var(--viewport-bg)]">
         {showGeometry ? (
           <CadViewer
-            source={null}
+            source={document.geometry3d ?? null}
             meta={{}}
             mode="nmg"
             fileName={fileName}
             components={renderable}
-            layoutNote={LAYOUT_NOTE}
+            placements={placed || document.geometry3d || document.storedGeometry ? (document.placements ?? []) : undefined}
+            storedSource={document.storedGeometry ?? null}
+            layoutNote={placed || document.geometry3d || document.storedGeometry ? undefined : LAYOUT_NOTE}
             onProgress={() => undefined}
             onReady={() => undefined}
           />
@@ -119,12 +169,17 @@ export function NativeCadViewer({
       </div>
 
       <aside className="hidden w-80 shrink-0 flex-col overflow-y-auto border-l border-line bg-ink-850 lg:flex">
-        <GeometryNotice document={document} showingGeometry={showGeometry} />
+        <GeometryNotice document={document} showingGeometry={showGeometry} placed={placed} />
         {document.measured && <MeasuredSize measured={document.measured} />}
         {isAssembly && (
           <ComponentsPanel
             components={components}
             counts={counts}
+            occurrences={occurrences}
+            storage={storage}
+            placed={placedCount}
+            placementsTotal={document.placements?.length ?? 0}
+            stored={storedCount}
             onAdd={add}
             rejected={rejected}
             onDismissRejected={dismissRejected}
@@ -141,6 +196,7 @@ export function NativeCadViewer({
 
 function PreviewStage({ document, fileName }: { document: NativeCadDocument; fileName: string }) {
   const [zoomed, setZoomed] = useState(false);
+  const { t } = useT();
 
   if (!document.preview) {
     return (
@@ -150,11 +206,12 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
           <path d="m4 5.5 8 3.5 8-3.5M12 9v13" strokeLinejoin="round" />
         </svg>
         <p className="mt-4 max-w-md text-[15px] font-medium text-mist-200">
-          This {document.application} document has no preview saved inside it.
+          {t('This {application} document has no preview saved inside it.', { application: document.application })}
         </p>
         <p className="mt-2 max-w-md text-sm leading-relaxed text-mist-400">
-          Its properties are listed on the right. To see the model itself, add a STEP export or ask your
-          administrator to configure a CAD converter on the server.
+          {t(
+            'Its properties are listed on the right. To see the model itself, add a STEP export or ask your administrator to configure a CAD converter on the server.',
+          )}
         </p>
       </div>
     );
@@ -168,7 +225,7 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={apiUrl(document.preview.url)}
-        alt={`Preview of ${fileName} as saved by ${document.application}`}
+        alt={t('Preview of {name} as saved by {application}', { name: fileName, application: document.application })}
         width={document.preview.width}
         height={document.preview.height}
         data-testid="native-preview"
@@ -183,7 +240,16 @@ function PreviewStage({ document, fileName }: { document: NativeCadDocument; fil
 
 /* ------------------------------ side panels -------------------------------- */
 
-function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocument; showingGeometry: boolean }) {
+function GeometryNotice({
+  document,
+  showingGeometry,
+  placed,
+}: {
+  document: NativeCadDocument;
+  showingGeometry: boolean;
+  placed: boolean;
+}) {
+  const { t } = useT();
   return (
     <section className="border-b border-line p-4">
       <div className="flex items-center gap-2">
@@ -192,7 +258,7 @@ function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocu
             showingGeometry ? 'border-ok/40 bg-ok/10 text-ok' : 'border-accent/40 bg-accent/10 text-accent-bright'
           }`}
         >
-          {showingGeometry ? 'Geometry' : 'Preview'}
+          {showingGeometry ? t('Geometry') : t('Preview')}
         </span>
         <span className="text-[13px] font-medium text-mist-200">
           {document.application}
@@ -201,8 +267,14 @@ function GeometryNotice({ document, showingGeometry }: { document: NativeCadDocu
       </div>
       <p className="mt-3 text-[12px] leading-relaxed text-mist-400">
         {showingGeometry
-          ? 'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.'
-          : document.note}
+          ? placed
+            ? `${t('Every part stands where the assembly puts it.')} ${t(document.note)}`
+            : document.geometry3d
+              ? t(document.note)
+              : t(
+                  'Built from the component files you added. These are real solids: rotate, section and measure them like any other model.',
+                )
+          : t(document.note)}
       </p>
     </section>
   );
@@ -222,179 +294,39 @@ function MeasuredSize({ measured }: { measured: NonNullable<NativeCadDocument['m
     ['Y', measured.sizeMm.y],
     ['Z', measured.sizeMm.z],
   ];
+  const { t } = useT();
   return (
     <section className="border-b border-line p-4" data-testid="native-measured">
-      <h2 className="field-label">Measured size</h2>
+      <h2 className="field-label">{t('Measured size')}</h2>
       <div className="mt-3 flex items-baseline gap-3">
         {axes.map(([axis, mm]) => (
           <div key={axis}>
             <span className="text-[10px] uppercase tracking-wide text-mist-500">{axis}</span>
-            <p className="text-[15px] tabular-nums text-mist-100">{mm.toFixed(1)}</p>
+            <p className="text-[15px] tabular-nums text-mist-100">{decimal(mm.toFixed(1))}</p>
           </div>
         ))}
-        <span className="text-[12px] text-mist-500">mm</span>
+        <span className="text-[12px] text-mist-500">{unitLabel('mm')}</span>
       </div>
       <p className="mt-2 text-[11px] leading-relaxed text-mist-500">
-        Extent of the {measured.vertices} vertices read from the solid inside this file. Curved faces can
-        reach past their corners, so treat this as the vertex extent rather than a certified bounding box.
+        {t(
+          'Extent of the {count} vertices read from the solid inside this file. Curved faces can reach past their corners, so treat this as the vertex extent rather than a certified bounding box.',
+          { count: formatCount(measured.vertices) },
+        )}
       </p>
     </section>
   );
 }
 
-function ComponentsPanel({
-  components,
-  counts,
-  onAdd,
-  rejected,
-  onDismissRejected,
-  disabled,
-}: {
-  components: ComponentView[];
-  counts: { missing: number; pending: number; ready: number; failed: number };
-  onAdd(files: File[]): void;
-  rejected: { name: string; message: string } | null;
-  onDismissRejected(): void;
-  disabled: boolean;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [dragging, setDragging] = useState(false);
-
-  const accept = useCallback(
-    (list: FileList | null) => {
-      if (!list || list.length === 0) return;
-      onAdd(Array.from(list));
-    },
-    [onAdd],
-  );
-
-  const total = components.length;
-  const resolved = counts.ready;
-
-  return (
-    <section className="border-b border-line p-4">
-      <div className="flex items-baseline justify-between">
-        <h2 className="field-label">Components</h2>
-        <span className="font-mono text-[11px] text-mist-500" data-testid="component-count">
-          {resolved}/{total}
-        </span>
-      </div>
-
-      <div
-        role="button"
-        tabIndex={disabled ? -1 : 0}
-        aria-label="Add assembly components"
-        aria-disabled={disabled}
-        data-testid="component-dropzone"
-        onClick={() => !disabled && inputRef.current?.click()}
-        onKeyDown={(event) => {
-          if (disabled) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            inputRef.current?.click();
-          }
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragEnter={(event) => {
-          event.preventDefault();
-          if (!disabled) setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          if (!disabled) accept(event.dataTransfer?.files ?? null);
-        }}
-        className={`mt-3 rounded-xl border-2 border-dashed px-3 py-4 text-center text-[12px] transition-colors ${
-          disabled
-            ? 'cursor-not-allowed border-line bg-ink-900/50 text-mist-600'
-            : dragging
-              ? 'cursor-pointer border-accent bg-accent/10 text-accent-bright'
-              : 'cursor-pointer border-line-strong bg-ink-900/60 text-mist-400 hover:border-accent/60'
-        }`}
-      >
-        {disabled
-          ? 'This session has expired, so components can no longer be added.'
-          : 'Drop the component files here — they appear in the model as each one is ready.'}
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          className="sr-only"
-          data-testid="component-input"
-          onChange={(event) => {
-            accept(event.target.files);
-            event.target.value = '';
-          }}
-        />
-      </div>
-
-      {rejected && (
-        <div role="alert" className="mt-3 rounded-lg border border-danger/35 bg-danger/10 px-3 py-2">
-          <p className="text-[12px] text-mist-100">
-            {rejected.name}: {rejected.message}
-          </p>
-          <button type="button" onClick={onDismissRejected} className="mt-1 text-[11px] text-mist-400 underline">
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      <ul className="mt-3 space-y-1" data-testid="component-list">
-        {components.map((component) => (
-          <li
-            key={component.name}
-            className="flex items-center gap-2 rounded-lg border border-line bg-ink-900/50 px-2.5 py-1.5"
-          >
-            <StatusDot status={component.status} />
-            <span className="min-w-0 flex-1 truncate text-[12px] text-mist-200" title={component.name}>
-              {component.name}
-            </span>
-            <span className="shrink-0 text-[11px] text-mist-500">
-              {component.status === 'pending' && component.uploaded < 100
-                ? `${component.uploaded}%`
-                : STATUS_LABEL[component.status]}
-            </span>
-          </li>
-        ))}
-        {components.length === 0 && (
-          <li className="px-1 py-2 text-[12px] text-mist-500">
-            No component names could be read from this assembly. Drop the parts above and they will be added anyway.
-          </li>
-        )}
-      </ul>
-    </section>
-  );
-}
-
-const STATUS_LABEL: Record<ComponentView['status'], string> = {
-  missing: 'Missing',
-  pending: 'Opening',
-  ready: 'Ready',
-  failed: 'Failed',
-};
-
-function StatusDot({ status }: { status: ComponentView['status'] }) {
-  const className =
-    status === 'ready'
-      ? 'bg-ok'
-      : status === 'failed'
-        ? 'bg-danger'
-        : status === 'pending'
-          ? 'bg-accent animate-pulse'
-          : 'bg-ink-600';
-  return <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${className}`} />;
-}
-
 function PropertiesList({ document }: { document: NativeCadDocument }) {
+  const { t } = useT();
   return (
     <section className="p-4">
-      <h2 className="field-label">Document properties</h2>
+      <h2 className="field-label">{t('Document properties')}</h2>
       <dl className="mt-3 space-y-2" data-testid="native-properties">
         {document.properties.map((property) => (
           <div key={property.name} className="grid grid-cols-[7.5rem_1fr] gap-2">
             <dt className="truncate text-[12px] text-mist-500" title={property.name}>
-              {property.name}
+              {t(property.name)}
             </dt>
             <dd className="break-words text-[12px] text-mist-200">{property.value}</dd>
           </div>

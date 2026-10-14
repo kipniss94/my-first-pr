@@ -151,3 +151,64 @@ describe('display mesh', () => {
     assert.deepEqual(failed, [], `no usable mesh in: ${failed.slice(0, 5).join(', ')}`);
   });
 });
+
+describe('display mesh colours', () => {
+  // An MFC archive the way SolidWorks writes the display list: a colour
+  // object, the body, then faces, each ending with a pointer to its colour.
+  const words = (values: number[]) => Buffer.from(new Uint32Array(values).buffer);
+  const u16 = (value: number) => Buffer.from(new Uint16Array([value]).buffer);
+  const classDef = (name: string) => Buffer.concat([u16(0xffff), u16(1), u16(name.length), Buffer.from(name, 'latin1')]);
+  const text = (s: string) => Buffer.concat([Buffer.from([0xff, 0xfe, 0xff, s.length]), Buffer.from(s, 'utf16le')]);
+  /** A visual-properties object's fields: colour, then material name, flag, colour again, 1.0f. */
+  const props = (r: number, g: number, b: number) =>
+    Buffer.concat([Buffer.from([r, g, b, 0]), Buffer.alloc(8), text('defaultplastic'), Buffer.from([3, r, g, b, 0]), Buffer.from(new Float32Array([1]).buffer), Buffer.alloc(16)]);
+  const slot = Buffer.from([1, 0, 0, 0, 0xff, 0xff, 0xff, 0xff]);
+  const tail = Buffer.alloc(24);
+  const face = (id: number) => Buffer.concat([words([id]), squareFace().subarray(12, 16), squareFace()]);
+  // Load indices: colour class 1, body colour 2, body class 3, body 4, face class 5,
+  // face 0 = 6, its colour 7, face 1 = 8, face 2 = 9, face 3 = 10.
+  const data = Buffer.concat([
+    Buffer.alloc(16),
+    classDef('moVisualProperties_c'),
+    props(10, 20, 30),
+    classDef('uoTempBodyTessData_c'),
+    u16(4),
+    classDef('uoTempFaceTessData_c'),
+    face(1),
+    slot,
+    u16(0x8001),
+    props(200, 0, 0),
+    tail,
+    u16(0x8005),
+    face(2),
+    slot,
+    u16(7),
+    tail,
+    u16(0x8005),
+    face(3),
+    slot,
+    u16(0),
+    tail,
+    u16(0x8005),
+    face(4),
+    slot,
+    u16(2),
+    tail,
+  ]);
+
+  it("gives each face its own colour, one stored before, or its body's", () => {
+    const faces = decodeDisplayList(data);
+    assert.equal(faces.length, 4);
+    assert.deepEqual(
+      faces.map((f) => f.color),
+      [
+        [200, 0, 0],
+        [200, 0, 0],
+        [10, 20, 30],
+        [10, 20, 30],
+      ],
+    );
+    const mesh = toIndexedMesh(faces);
+    assert.equal(mesh.faceColors?.length, 4);
+  });
+});

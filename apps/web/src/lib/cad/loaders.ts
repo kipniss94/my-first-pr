@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import type { NmgManifest } from '@docuview/shared';
-import { apiUrl, fetchWithProgress } from '@/lib/api';
+import type { AssemblyPlacement, NmgManifest } from '@docuview/shared';
+import { fetchApi, fetchWithProgress } from '@/lib/api';
 import type { CadModel, CadPart, CadTreeNode } from './types';
 
 /** Neutral engineering grey used whenever the file carries no colour. */
@@ -16,6 +16,34 @@ export function createPartMaterial(color: number | string = DEFAULT_PART_COLOR):
   });
 }
 
+/**
+ * A colour attribute from per-face colours: each face range's vertices take
+ * its colour, the rest the mesh's. False when there is nothing to paint.
+ */
+function paintFaces(
+  geometry: THREE.BufferGeometry,
+  indices: Uint32Array,
+  faceRanges: number[] | undefined,
+  faceColors: (string | null)[] | undefined,
+  meshColor: string | undefined,
+): boolean {
+  if (!faceRanges || !faceColors || faceColors.length * 2 !== faceRanges.length) return false;
+  const count = geometry.getAttribute('position').count;
+  const colors = new Float32Array(count * 3);
+  const base = new THREE.Color(meshColor ?? DEFAULT_PART_COLOR);
+  for (let v = 0; v < count; v += 1) base.toArray(colors, v * 3);
+  const color = new THREE.Color();
+  faceColors.forEach((hex, face) => {
+    if (!hex) return;
+    color.set(hex);
+    for (let triangle = faceRanges[face * 2]; triangle <= faceRanges[face * 2 + 1]; triangle += 1) {
+      for (let corner = 0; corner < 3; corner += 1) color.toArray(colors, indices[triangle * 3 + corner] * 3);
+    }
+  });
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return true;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Normalized geometry (STEP / IGES / BREP)                                   */
 /* -------------------------------------------------------------------------- */
@@ -26,7 +54,7 @@ export async function loadNmg(
   signal?: AbortSignal,
 ): Promise<CadModel> {
   onProgress?.(5);
-  const manifestResponse = await fetch(apiUrl(source), { signal });
+  const manifestResponse = await fetchApi(source, { signal });
   if (!manifestResponse.ok) throw new Error('Could not load the prepared geometry.');
   const manifest = (await manifestResponse.json()) as NmgManifest;
 
@@ -97,7 +125,10 @@ export async function loadNmg(
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
 
-    const mesh = new THREE.Mesh(geometry, createPartMaterial(meshSpec.color ?? DEFAULT_PART_COLOR));
+    // Faces of their own colour: vertex colours, the material white beneath them.
+    const faceColored = paintFaces(geometry, indices, meshSpec.faceRanges, meshSpec.faceColors, meshSpec.color);
+    const mesh = new THREE.Mesh(geometry, createPartMaterial(faceColored ? 0xffffff : (meshSpec.color ?? DEFAULT_PART_COLOR)));
+    if (faceColored) (mesh.material as THREE.MeshStandardMaterial).vertexColors = true;
     mesh.name = meshSpec.name;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
@@ -228,6 +259,8 @@ async function parseMesh(buffer: ArrayBuffer, formatId: string, fileName: string
       const loader = new GLTFLoader();
       const gltf = await loader.parseAsync(buffer, '');
       prepareImportedMaterials(gltf.scene);
+      // glTF is in metres with Y up; the viewer measures in millimetres with Z up.
+      gltf.scene.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI / 2).scale(new THREE.Vector3(1000, 1000, 1000)));
       return gltf.scene;
     }
     case 'fbx': {
@@ -345,6 +378,8 @@ export interface MergeSource {
   /** Label for the tree node this model hangs under. */
   name: string;
   model: CadModel;
+  /** For a part drawn in one of its configurations rather than as last saved. */
+  configuration?: string;
 }
 
 /**
@@ -444,6 +479,158 @@ export function mergeModels(sources: MergeSource[], rootName: string, layout: 'r
     nodes,
     rootIds: [rootNode.id],
     units,
+    producer: [...producers].join(', ') || 'DocuView',
+    stats: { parts: parts.length, triangles, vertices },
+    warnings,
+    hasBrepFaces,
+  };
+}
+
+/**
+ * An assembly built the way it was designed: every part where the assembly
+ * puts it.
+ *
+ * `placements` come from the assembly file itself, one per occurrence of a
+ * part, already resolved through its sub-assemblies. Each occurrence is a copy
+ * of the part's loaded model that shares its geometry — a hundred identical
+ * screws cost one mesh — but has its own material, so selecting one does not
+ * light up the rest. `primary` is geometry the assembly carries itself, already
+ * placed; parts whose file has not arrived yet are simply not drawn yet.
+ */
+export function placeModels(
+  primary: CadModel | null,
+  components: MergeSource[],
+  placements: AssemblyPlacement[],
+  rootName: string,
+  stored: CadModel | null = null,
+): CadModel {
+  const root = new THREE.Group();
+  root.name = rootName;
+  const parts: CadPart[] = [];
+  const nodes: CadTreeNode[] = [];
+  const rootNode: CadTreeNode = { id: 'root', name: rootName, parentId: null, childIds: [], partIds: [], depth: 0 };
+  nodes.push(rootNode);
+  const byId = new Map<string, CadTreeNode>([[rootNode.id, rootNode]]);
+  const producers = new Set<string>();
+  const warnings: string[] = [];
+  let triangles = 0;
+  let vertices = 0;
+  let hasBrepFaces = false;
+
+  /** The tree node for a path of instance names, made on first use. */
+  const nodeFor = (path: string[]): CadTreeNode => {
+    let parent = rootNode;
+    let key = rootNode.id;
+    path.forEach((name, depth) => {
+      key = `${key}/${name}`;
+      let node = byId.get(key);
+      if (!node) {
+        node = { id: key, name, parentId: parent.id, childIds: [], partIds: [], depth: depth + 1 };
+        byId.set(key, node);
+        nodes.push(node);
+        parent.childIds.push(node.id);
+      }
+      parent = node;
+    });
+    return parent;
+  };
+
+  if (primary) {
+    root.add(primary.root);
+    for (const node of primary.nodes) {
+      const imported = {
+        ...node,
+        id: `p:${node.id}`,
+        parentId: node.parentId === null ? rootNode.id : `p:${node.parentId}`,
+        childIds: node.childIds.map((child) => `p:${child}`),
+        partIds: node.partIds.map((part) => `p:${part}`),
+        depth: node.depth + 1,
+      };
+      nodes.push(imported);
+      byId.set(imported.id, imported);
+    }
+    rootNode.childIds.push(...primary.rootIds.map((id) => `p:${id}`));
+    for (const part of primary.parts) {
+      parts.push({ ...part, id: `p:${part.id}`, nodeId: `p:${part.nodeId}` });
+      triangles += part.triangles;
+      vertices += part.vertices;
+    }
+    hasBrepFaces ||= primary.hasBrepFaces;
+    producers.add(primary.producer);
+    warnings.push(...primary.warnings);
+  }
+
+  // A part used in several configurations brings one model per configuration;
+  // each occurrence takes the one it was placed as, else the part as saved.
+  const models = new Map<string, CadModel>();
+  for (const source of components) {
+    const name = source.name.toLowerCase();
+    models.set(source.configuration === undefined ? name : `${name}|${source.configuration}`, source.model);
+  }
+  // A part whose file has not been added: the mesh the assembly keeps of it.
+  const storedModels = new Map<number, CadModel>();
+  const storedModel = (id: number | undefined): CadModel | undefined => {
+    if (!stored || id === undefined) return undefined;
+    let model = storedModels.get(id);
+    if (!model) {
+      const part = stored.parts.find((p) => p.id === `m${id}`);
+      if (!part) return undefined;
+      const mesh = part.mesh.clone();
+      const group = new THREE.Group();
+      group.add(mesh);
+      model = { ...stored, root: group, parts: [{ ...part, mesh }] };
+      storedModels.set(id, model);
+    }
+    return model;
+  };
+  const matrix = new THREE.Matrix4();
+  placements.forEach((placement, index) => {
+    const name = placement.component.toLowerCase();
+    const model = models.get(`${name}|${placement.configuration}`) ?? models.get(name) ?? storedModel(placement.stored);
+    if (!model) return;
+    const copy = model.root.clone(true);
+    // Pair each original mesh with its copy: clone() keeps traversal order.
+    const originals: THREE.Mesh[] = [];
+    const copies: THREE.Mesh[] = [];
+    model.root.traverse((object) => {
+      if ((object as THREE.Mesh).isMesh) originals.push(object as THREE.Mesh);
+    });
+    copy.traverse((object) => {
+      if ((object as THREE.Mesh).isMesh) {
+        const mesh = object as THREE.Mesh;
+        mesh.material = Array.isArray(mesh.material) ? mesh.material.map((m) => m.clone()) : mesh.material.clone();
+        copies.push(mesh);
+      }
+    });
+    const twin = new Map(originals.map((mesh, i) => [mesh, copies[i]]));
+
+    const holder = new THREE.Group();
+    holder.name = placement.path.join(' / ');
+    matrix.fromArray(placement.matrix);
+    matrix.decompose(holder.position, holder.quaternion, holder.scale);
+    holder.add(copy);
+    root.add(holder);
+
+    const node = nodeFor(placement.path);
+    for (const part of model.parts) {
+      const mesh = twin.get(part.mesh);
+      if (!mesh) continue;
+      const id = `i${index}:${part.id}`;
+      parts.push({ ...part, id, mesh, nodeId: node.id });
+      node.partIds.push(id);
+      triangles += part.triangles;
+      vertices += part.vertices;
+    }
+    hasBrepFaces ||= model.hasBrepFaces;
+    producers.add(model.producer);
+  });
+
+  return {
+    root,
+    parts,
+    nodes,
+    rootIds: [rootNode.id],
+    units: primary?.units ?? components[0]?.model.units ?? 'mm',
     producer: [...producers].join(', ') || 'DocuView',
     stats: { parts: parts.length, triangles, vertices },
     warnings,

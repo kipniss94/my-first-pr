@@ -2,6 +2,7 @@
 
 import { JOB_STAGES, type JobStage } from '@docuview/shared';
 import { formatBytes } from '@/lib/format';
+import { useT } from '@/lib/prefs';
 import type { Session } from '@/lib/session';
 
 const STAGE_COPY: Record<JobStage, { label: string; detail: string }> = {
@@ -23,6 +24,7 @@ export function StageRail({ session, onCancel }: { session: Session; onCancel: (
   const stages = JOB_STAGES.filter((stage) => stage !== 'ready');
   const currentIndex = stages.indexOf(session.stage as (typeof stages)[number]);
   const activeIndex = currentIndex === -1 ? stages.length : currentIndex;
+  const { t } = useT();
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center px-4 py-10">
@@ -31,9 +33,9 @@ export function StageRail({ session, onCancel }: { session: Session; onCancel: (
           {session.fileName}
         </p>
         <p className="mt-1 text-center text-xs text-mist-500">
-          {session.fileSize > 0 ? formatBytes(session.fileSize) : 'Preparing'}
+          {session.fileSize > 0 ? formatBytes(session.fileSize) : t('Preparing')}
           {session.stage === 'uploading' && session.fileSize > 0 && (
-            <> · {formatBytes(session.uploadedBytes)} sent</>
+            <> · {t('{size} sent', { size: formatBytes(session.uploadedBytes) })}</>
           )}
         </p>
 
@@ -63,9 +65,9 @@ export function StageRail({ session, onCancel }: { session: Session; onCancel: (
                       state === 'todo' ? 'text-mist-500' : state === 'active' ? 'text-mist-100' : 'text-mist-300'
                     }`}
                   >
-                    {copy.label}
+                    {t(copy.label)}
                   </span>
-                  {state === 'active' && <span className="mt-0.5 block text-xs text-mist-400">{copy.detail}</span>}
+                  {state === 'active' && <span className="mt-0.5 block text-xs text-mist-400">{t(copy.detail)}</span>}
                 </span>
                 {state === 'active' && session.progress >= 0 && (
                   <span className="font-mono text-xs tabular-nums text-mist-400">{session.progress}%</span>
@@ -89,7 +91,7 @@ export function StageRail({ session, onCancel }: { session: Session; onCancel: (
 
         <div className="mt-6 text-center">
           <button type="button" onClick={onCancel} className="btn btn-ghost">
-            Cancel
+            {t('Cancel')}
           </button>
         </div>
       </div>

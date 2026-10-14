@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { safeNext } from '@/lib/access';
+import { serverT } from '@/lib/i18n-server';
 
 export const metadata: Metadata = { title: 'Access code — DocuView', robots: { index: false } };
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,8 @@ const MESSAGES: Record<string, string> = {
 export default async function AccessPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const params = await searchParams;
   const next = safeNext(params.next);
-  const error = params.error ? MESSAGES[params.error] : null;
+  const { t } = await serverT();
+  const error = params.error && MESSAGES[params.error] ? t(MESSAGES[params.error]) : null;
 
   return (
     <main className="grid min-h-dvh place-items-center bg-ink-900 px-4">
@@ -22,10 +24,10 @@ export default async function AccessPage({ searchParams }: { searchParams: Promi
         className="w-full max-w-sm rounded-2xl border border-line bg-ink-850 p-6 shadow-xl"
       >
         <h1 className="text-lg font-semibold text-mist-100">DocuView</h1>
-        <p className="mt-1 text-sm text-mist-400">Enter the access code shown in the DocuView window on the computer that runs it.</p>
+        <p className="mt-1 text-sm text-mist-400">{t('Enter the access code shown in the DocuView window on the computer that runs it.')}</p>
         <input type="hidden" name="next" value={next} />
         <label className="mt-5 block">
-          <span className="field-label">Access code</span>
+          <span className="field-label">{t('Access code')}</span>
           <input
             name="code"
             autoFocus
@@ -43,7 +45,7 @@ export default async function AccessPage({ searchParams }: { searchParams: Promi
           </p>
         )}
         <button type="submit" className="btn btn-primary mt-5 w-full justify-center" data-testid="access-submit">
-          Open DocuView
+          {t('Open DocuView')}
         </button>
       </form>
     </main>
