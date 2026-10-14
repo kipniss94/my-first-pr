@@ -45,3 +45,5 @@ npm-debug.log*
 # Runtime logs and build fingerprint of the Windows launcher.
 logs/
 .build-stamp
+.access-code
+tools/bin/

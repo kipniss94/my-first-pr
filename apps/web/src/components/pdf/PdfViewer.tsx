@@ -264,6 +264,12 @@ export function PdfViewer({
         for (const element of pages) {
           if (element.offsetTop <= middle) best = Number(element.dataset.page);
         }
+        // A short last page — a landscape sheet on a phone — never reaches the
+        // middle of the screen. Scrolled to the end, the last page is the one
+        // being looked at; otherwise "Delete page" would name the page above it.
+        if (container.scrollTop + container.clientHeight >= container.scrollHeight - 4 && pages.length > 0) {
+          best = Number(pages[pages.length - 1].dataset.page);
+        }
         setCurrentPage(best);
       });
     };

@@ -25,6 +25,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * When DocuView is opened to other devices the API asks for the access code.
+ * The answer is the same wherever it surfaces — a page load, an upload, a
+ * viewer fetching its file: go to the code page, then come back here.
+ */
+export function requireAccess(status: number, error: JobError | undefined): boolean {
+  if (status !== 401 || error?.code !== 'access_required' || typeof window === 'undefined') return false;
+  if (!window.location.pathname.startsWith('/access')) {
+    const next = window.location.pathname + window.location.search;
+    window.location.assign(`/access?next=${encodeURIComponent(next)}`);
+  }
+  return true;
+}
+
 async function readError(response: Response): Promise<JobError> {
   try {
     const body = (await response.json()) as { error?: JobError };
@@ -46,7 +60,11 @@ async function getJson<T>(path: string, init?: RequestInit): Promise<T> {
   } catch {
     throw new ApiError(GENERIC_ERROR);
   }
-  if (!response.ok) throw new ApiError(await readError(response), response.status);
+  if (!response.ok) {
+    const error = await readError(response);
+    requireAccess(response.status, error);
+    throw new ApiError(error, response.status);
+  }
   return (await response.json()) as T;
 }
 
@@ -148,6 +166,7 @@ function uploadTo(path: string, file: File, onProgress: (loaded: number, total: 
         resolve(body as UploadResponse);
       } else {
         const error = (body as { error?: JobError }).error;
+        requireAccess(xhr.status, error);
         reject(
           new ApiError(
             error ?? { code: `http_${xhr.status}`, message: "We couldn't upload this file.", retryable: true },

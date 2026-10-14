@@ -65,7 +65,8 @@ VOLUME ["/data"]
 RUN mkdir -p /data && chown -R node:node /data /app
 USER node
 
-EXPOSE 3000 4000
+# One port: the gateway (scripts/gateway.mjs) serves the web app and the API.
+EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD node -e "fetch('http://127.0.0.1:4000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

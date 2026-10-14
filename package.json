@@ -12,9 +12,10 @@
     "dev:api": "npm run dev --workspace @docuview/api",
     "dev:web": "npm run dev --workspace @docuview/web",
     "build": "npm run build --workspace @docuview/shared && npm run build --workspace @docuview/api && npm run build --workspace @docuview/web",
-    "start": "concurrently -n api,web -c cyan,magenta \"npm:start:api\" \"npm:start:web\"",
+    "start": "concurrently -n api,web,gateway -c cyan,magenta,green \"npm:start:api\" \"npm:start:web\" \"npm:start:gateway\"",
     "start:api": "npm run start --workspace @docuview/api",
     "start:web": "npm run start --workspace @docuview/web",
+    "start:gateway": "node scripts/gateway.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspace @docuview/api",
@@ -30,5 +31,8 @@
   },
   "engines": {
     "node": ">=20.11"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
   }
 }
