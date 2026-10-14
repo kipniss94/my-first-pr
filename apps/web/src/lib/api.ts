@@ -66,6 +66,35 @@ export function deleteFile(fileId: string): Promise<{ deleted: boolean }> {
   return getJson<{ deleted: boolean }>(`/api/v1/files/${fileId}`, { method: 'DELETE' });
 }
 
+export interface PageState {
+  editable: boolean;
+  revision: number;
+  canUndo: boolean;
+}
+
+export interface PageEditResponse {
+  revision: number;
+  pageCount: number;
+  canUndo: boolean;
+  note: string | null;
+}
+
+export function getPageState(fileId: string): Promise<PageState> {
+  return getJson<PageState>(`/api/v1/files/${fileId}/pages`, { cache: 'no-store' });
+}
+
+export function deletePages(fileId: string, pages: number[]): Promise<PageEditResponse> {
+  return getJson<PageEditResponse>(`/api/v1/files/${fileId}/pages/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pages }),
+  });
+}
+
+export function undoPageEdit(fileId: string): Promise<PageEditResponse> {
+  return getJson<PageEditResponse>(`/api/v1/files/${fileId}/pages/undo`, { method: 'POST' });
+}
+
 export interface UploadHandle {
   promise: Promise<UploadResponse>;
   abort(): void;

@@ -6,12 +6,14 @@ import { formatCount } from '@/lib/format';
 import { ErrorPanel } from '@/components/viewer/ErrorPanel';
 import { ViewerAdRail } from '@/components/site/AdSlot';
 import { PageLayoutToggle } from './PageLayoutToggle';
+import { withRevision, type PageEditing } from '@/lib/page-editing';
 
 interface WordViewerProps {
   source: string;
   meta: Record<string, unknown>;
   fileId: string | null;
   onReady(): void;
+  editing?: PageEditing;
 }
 
 const WIDTHS = {
@@ -22,18 +24,22 @@ const WIDTHS = {
 
 type WidthKey = keyof typeof WIDTHS;
 
-export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
+export function WordViewer({ source, meta, fileId, onReady, editing }: WordViewerProps) {
   const [html, setHtml] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; hint?: string } | null>(null);
   const [width, setWidth] = useState<WidthKey>('comfortable');
   const [fontScale, setFontScale] = useState(1);
-  const [showPageLayout, setShowPageLayout] = useState(false);
+  // Pages first, like a PDF: the rail on the left is how people find their way
+  // around a document and pick pages to delete. The reflowed text view is one
+  // click away for reading on a narrow screen.
+  const [showPageLayout, setShowPageLayout] = useState(true);
+  const revision = editing?.revision ?? 0;
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const response = await fetch(apiUrl(source));
+        const response = await fetch(apiUrl(withRevision(source, revision)));
         if (!response.ok) throw new Error(`http ${response.status}`);
         // Served as text/plain on purpose: the browser must never execute this
         // markup by navigating to the asset URL directly.
@@ -53,7 +59,7 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
     return () => {
       cancelled = true;
     };
-  }, [onReady, source]);
+  }, [onReady, revision, source]);
 
   const pdfRendition = typeof meta.pdfRendition === 'string' ? meta.pdfRendition : null;
   const words = typeof meta.words === 'number' ? meta.words : null;
@@ -64,7 +70,14 @@ export function WordViewer({ source, meta, fileId, onReady }: WordViewerProps) {
   if (error) return <ErrorPanel error={{ code: 'word_failed', ...error, retryable: false }} />;
 
   if (showPageLayout && pdfRendition && fileId) {
-    return <PageLayoutToggle source={pdfRendition} label="document" onBack={() => setShowPageLayout(false)} />;
+    return (
+      <PageLayoutToggle
+        source={withRevision(pdfRendition, revision)}
+        label="reading view"
+        onBack={() => setShowPageLayout(false)}
+        editing={editing}
+      />
+    );
   }
 
   return (

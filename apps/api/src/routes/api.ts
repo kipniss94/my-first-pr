@@ -9,6 +9,7 @@ import { config, tmpDir } from '../config.js';
 import { logger } from '../logger.js';
 import { JobQueue, type JobRecord } from '../jobs/queue.js';
 import { buildRenditionRequest, executeProcessRequest, runPipeline } from '../processing/pipeline.js';
+import { deletePages, EDITABLE_FORMATS, PageEditError, pageEditState, undoPageEdit } from '../processing/edit/edit-pages.js';
 import {
   assetPath,
   createFileDir,
@@ -312,6 +313,67 @@ api.get('/files/:fileId/rendition/pdf', async (req: Request, res: Response) => {
   });
   streamFile(target, res);
 });
+
+/* ------------------------------ page editing ------------------------------ */
+
+const pageEditLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: { code: 'rate_limited', message: 'Too many edits at once. Please wait a moment.', retryable: true } },
+});
+
+/** Whether this document's pages can be edited, and where its history stands. */
+api.get('/files/:fileId/pages', async (req: Request, res: Response) => {
+  const meta = await requireMeta(req, res);
+  if (!meta) return;
+  const formatId = queue.findByFile(meta.fileId)?.format?.formatId ?? null;
+  res.json({ editable: formatId !== null && EDITABLE_FORMATS.has(formatId), ...(await pageEditState(meta)) });
+});
+
+api.post('/files/:fileId/pages/delete', pageEditLimiter, async (req: Request, res: Response) => {
+  const meta = await requireMeta(req, res);
+  if (!meta) return;
+  const pages = (req.body as { pages?: unknown } | undefined)?.pages;
+  if (!Array.isArray(pages) || pages.length === 0 || pages.length > 10_000 || !pages.every((p) => Number.isInteger(p))) {
+    res.status(400).json({ error: { code: 'bad_pages', message: 'Choose the pages to delete.', retryable: false } });
+    return;
+  }
+  await runPageEdit(res, meta, (formatId) => deletePages(meta, formatId, pages as number[]));
+});
+
+api.post('/files/:fileId/pages/undo', pageEditLimiter, async (req: Request, res: Response) => {
+  const meta = await requireMeta(req, res);
+  if (!meta) return;
+  await runPageEdit(res, meta, (formatId) => undoPageEdit(meta, formatId));
+});
+
+async function runPageEdit(
+  res: Response,
+  meta: FileMeta,
+  edit: (formatId: string) => ReturnType<typeof deletePages>,
+): Promise<void> {
+  const job = queue.findByFile(meta.fileId);
+  const formatId = job?.format?.formatId;
+  if (!formatId) {
+    res.status(409).json({ error: { code: 'not_ready', message: 'This document is still being prepared.', retryable: true } });
+    return;
+  }
+  try {
+    const outcome = await edit(formatId);
+    // The job keeps the structural view the viewer reloads; keep it current.
+    if (job && outcome.result) job.result = { ...outcome.result, warnings: job.result?.warnings ?? [] };
+    res.json({ revision: outcome.revision, pageCount: outcome.pageCount, canUndo: outcome.canUndo, note: outcome.note, result: job?.result ?? null });
+  } catch (err) {
+    if (err instanceof PageEditError) {
+      res.status(422).json({ error: { code: 'page_edit_failed', message: err.message, retryable: false } });
+      return;
+    }
+    logger.error({ err, fileId: meta.fileId }, 'page edit failed');
+    res.status(500).json({ error: { code: 'page_edit_failed', message: "The pages couldn't be changed.", retryable: true } });
+  }
+}
 
 api.delete('/files/:fileId', async (req: Request, res: Response) => {
   const fileId = param(req, 'fileId');

@@ -12,6 +12,7 @@ import { removeDocument, setThumbnail } from '@/lib/cache';
 import { Logo } from '@/components/site/SiteChrome';
 import { ErrorPanel, WarningList } from './ErrorPanel';
 import { StageRail } from './StageRail';
+import { usePageEditing, withRevision } from '@/lib/page-editing';
 
 /**
  * Viewers are loaded on demand. three.js and PDF.js together are several
@@ -44,6 +45,7 @@ function ViewerSkeleton() {
 
 export function ViewerShell({ session }: { session: Session }) {
   const router = useRouter();
+  const editing = usePageEditing(session.fileId, session.docId ?? null, session.fileName);
   const [dismissedWarnings, setDismissedWarnings] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
@@ -89,6 +91,7 @@ export function ViewerShell({ session }: { session: Session }) {
   return (
     <div className="flex h-dvh flex-col overflow-hidden bg-ink-900">
       <ViewerHeader
+        revision={editing.revision}
         session={session}
         job={job}
         onDelete={onDelete}
@@ -156,15 +159,22 @@ export function ViewerShell({ session }: { session: Session }) {
           )}
           {result.viewer === 'pdf' && (
             <PdfViewer
-              source={result.source}
+              source={withRevision(result.source, editing.revision)}
               fileName={session.fileName}
               onProgress={onViewerLoading}
               onReady={onViewerReady}
               onThumbnail={onThumbnail}
+              editing={editing}
             />
           )}
           {result.viewer === 'office-word' && (
-            <WordViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
+            <WordViewer
+              source={result.source}
+              meta={result.meta}
+              fileId={session.fileId}
+              onReady={onViewerReady}
+              editing={editing}
+            />
           )}
           {result.viewer === 'office-sheet' && (
             <SheetViewer source={result.source} meta={result.meta} fileId={session.fileId} onReady={onViewerReady} />
@@ -195,11 +205,14 @@ function ViewerHeader({
   job,
   onDelete,
   deleting,
+  revision,
 }: {
   session: Session;
   job: JobState | null;
   onDelete: () => void;
   deleting: boolean;
+  /** Bumped by page edits; the download must be the edited file. */
+  revision: number;
 }) {
   const format = job?.format;
   return (
@@ -225,7 +238,7 @@ function ViewerHeader({
       <div className="flex shrink-0 items-center gap-1">
         {session.fileId && (
           <a
-            href={apiUrl(`/api/v1/files/${session.fileId}/raw?download=1`)}
+            href={apiUrl(withRevision(`/api/v1/files/${session.fileId}/raw?download=1`, revision))}
             download={session.fileName}
             className="btn-icon"
             title="Download the original file"
