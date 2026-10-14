@@ -258,7 +258,7 @@ export function WordViewer({
         </div>
 
         {showingPages && fileId ? (
-          <DocxPages fileId={fileId} onError={onPagesError} />
+          <DocxPages fileId={fileId} fileName={fileName} onError={onPagesError} />
         ) : (
           <div className="min-h-0 flex-1 overflow-auto bg-paper-2 py-8">
             {html === null ? (

@@ -15,7 +15,8 @@ const publicDir = path.resolve(here, '../public');
 async function main() {
   const entry = require.resolve('pdfjs-dist/package.json');
   const root = path.dirname(entry);
-  const candidates = ['build/pdf.worker.min.mjs', 'build/pdf.worker.mjs'];
+  // The legacy worker, to match the legacy library the viewer imports.
+  const candidates = ['legacy/build/pdf.worker.min.mjs', 'legacy/build/pdf.worker.mjs'];
 
   await fs.mkdir(publicDir, { recursive: true });
   // The font edited PDF text is written in: Liberation Sans has Cyrillic, and

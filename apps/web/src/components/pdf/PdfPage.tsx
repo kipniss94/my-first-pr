@@ -140,7 +140,7 @@ export function PdfPage({
         textContainer.style.width = `${viewport.width}px`;
         textContainer.style.height = `${viewport.height}px`;
         try {
-          const { TextLayer } = await import('pdfjs-dist');
+          const { TextLayer } = await import('pdfjs-dist/legacy/build/pdf.mjs');
           const layer = new TextLayer({
             textContentSource: page.streamTextContent(),
             container: textContainer,

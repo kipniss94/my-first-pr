@@ -92,7 +92,10 @@ export function PdfViewer({
 
     (async () => {
       try {
-        const pdfjs = await import('pdfjs-dist');
+        // The legacy build: the same library compiled for older engines. The
+        // modern build needs this year's browsers, and on an older phone or
+        // tablet it fails silently, drawing blank pages.
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
         // The worker is copied into /public at build time, so it is same-origin
         // and version-locked to the library we just imported.
         pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
@@ -217,6 +220,12 @@ export function PdfViewer({
         for (const element of pages) {
           if (element.offsetTop <= middle) best = Number(element.dataset.page);
         }
+        // A short last page — a landscape sheet on a phone — never reaches the
+        // middle of the screen. Scrolled to the end, the last page is the one
+        // being looked at; otherwise "Delete page" would name the page above it.
+        if (container.scrollTop + container.clientHeight >= container.scrollHeight - 4 && pages.length > 0) {
+          best = Number(pages[pages.length - 1].dataset.page);
+        }
         setCurrentPage(best);
       });
     };
@@ -306,6 +315,17 @@ export function PdfViewer({
 
   /* ------------------------------- shortcuts ------------------------------ */
 
+  const toggleDeleted = useCallback(
+    (page: number) =>
+      setDeletedPages((current) => {
+        const next = new Set(current);
+        if (next.has(page)) next.delete(page);
+        else if (next.size < pageCount - 1) next.add(page);
+        return next;
+      }),
+    [pageCount],
+  );
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -323,10 +343,16 @@ export function PdfViewer({
       if (event.key === 'PageUp' || event.key === 'ArrowLeft') scrollToPage(Math.max(1, currentPage - 1));
       if (event.key === 'Home') scrollToPage(1);
       if (event.key === 'End') scrollToPage(pageCount);
+      // Delete marks the page on screen, as × on its thumbnail does.
+      if (event.key === 'Delete' && editable && variant === 'document' && pageCount > 1) {
+        event.preventDefault();
+        setEditing(true);
+        toggleDeleted(currentPage);
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [currentPage, pageCount, scrollToPage]);
+  }, [currentPage, pageCount, scrollToPage, editable, variant, toggleDeleted]);
 
   if (error) return <ErrorPanel error={{ code: 'pdf_failed', ...error, retryable: false }} />;
 
@@ -595,14 +621,7 @@ export function PdfViewer({
                 currentPage={currentPage}
                 onSelect={scrollToPage}
                 deletedPages={editing ? deletedPages : null}
-                onToggleDelete={(page) =>
-                  setDeletedPages((current) => {
-                    const next = new Set(current);
-                    if (next.has(page)) next.delete(page);
-                    else if (next.size < pageCount - 1) next.add(page);
-                    return next;
-                  })
-                }
+                onToggleDelete={toggleDeleted}
               />
             ))}
 

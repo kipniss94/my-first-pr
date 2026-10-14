@@ -1,11 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { originalBytes } from "@/lib/edit";
+import { docxWithoutPages } from "@/lib/docx-pages";
+import { editedName, originalBytes, saveToDisk } from "@/lib/edit";
 import { useT } from "@/lib/prefs";
+import { EditorBar } from "./DocEditor";
 
 interface DocxPagesProps {
   fileId: string;
+  /** For the name of the saved copy. */
+  fileName: string;
   /** Called with the page count once the document is laid out. */
   onPages?(count: number): void;
   onError(): void;
@@ -21,8 +25,15 @@ const THUMBNAIL_WIDTH = 132;
  * where Word last broke them (Word saves that in the file) and where the
  * document asks for a break, with each section's paper size and margins,
  * headers and footers. Each thumbnail is a copy of its page, scaled down.
+ *
+ * Pages can be deleted the way PDF pages are: × on a thumbnail, the Delete
+ * key or the toolbar button marks a page, and saving writes a copy of the
+ * .docx without the marked pages. "Page 2" means the page 2 shown here —
+ * the engine in @docuview/shared reproduces exactly how docx-preview splits
+ * the document — and it takes the page's section with it, which is what
+ * makes a deleted page actually go away.
  */
-export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
+export function DocxPages({ fileId, fileName, onPages, onError }: DocxPagesProps) {
   const { t } = useT();
   const bodyRef = useRef<HTMLDivElement>(null);
   const styleRef = useRef<HTMLDivElement>(null);
@@ -34,6 +45,9 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
   const [pageWidth, setPageWidth] = useState(816);
   const [areaWidth, setAreaWidth] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [marked, setMarked] = useState<Set<number>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Lay the document out.
   useEffect(() => {
@@ -67,8 +81,14 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
         const found = [
           ...bodyRef.current.querySelectorAll<HTMLElement>("section.docx"),
         ];
+        // A page wider than the screen (landscape on a phone) stays reachable
+        // by scrolling instead of being cut off on the left.
+        bodyRef.current
+          .querySelector<HTMLElement>(".docx-wrapper")
+          ?.style.setProperty("align-items", "safe center");
         setPages(found);
-        setPageWidth(found[0]?.offsetWidth || 816);
+        // "Fit width" fits the widest page, so landscape pages fit too.
+        setPageWidth(Math.max(0, ...found.map((page) => page.offsetWidth)) || 816);
         onPages?.(found.length);
         setLoading(false);
       } catch {
@@ -128,11 +148,57 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
     [pages],
   );
 
+  const toggleMark = useCallback(
+    (page: number) => {
+      setNotice(null);
+      setMarked((currentMarks) => {
+        const next = new Set(currentMarks);
+        if (next.has(page)) next.delete(page);
+        else if (next.size + 1 >= pages.length) {
+          setNotice(t("A document has to keep at least one page."));
+          return currentMarks;
+        } else next.add(page);
+        return next;
+      });
+    },
+    [pages.length, t],
+  );
+
+  // A marked page fades in the view too, so it is clear what will go.
+  useEffect(() => {
+    pages.forEach((page, index) => {
+      const gone = marked.has(index + 1);
+      page.style.opacity = gone ? "0.35" : "";
+      page.style.outline = gone ? "3px solid rgb(220 38 38)" : "";
+      page.title = gone ? t("Marked for deletion") : "";
+    });
+  }, [marked, pages, t]);
+
+  const save = async () => {
+    setSaving(true);
+    setNotice(null);
+    try {
+      const { blob } = await docxWithoutPages(await originalBytes(fileId), [...marked]);
+      if (await saveToDisk(blob, editedName(fileName))) {
+        setNotice(t("Saved without those pages. The original on the server is unchanged."));
+      }
+    } catch (err) {
+      setNotice(t(err instanceof Error ? err.message : "We couldn't save these changes into the document."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   // Page Up / Page Down move a page at a time, as in the PDF viewer.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        toggleMark(current);
+        return;
+      }
       if (event.key === "PageDown") {
         event.preventDefault();
         goTo(Math.min(pages.length, current + 1));
@@ -143,7 +209,7 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [current, goTo, pages.length]);
+  }, [current, goTo, pages.length, toggleMark]);
 
   const percent = Math.round(scale * 100);
 
@@ -159,7 +225,11 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
           data-testid="docx-thumbnails"
         >
           {pages.map((page, index) => (
-            <li key={index} data-thumb={index + 1}>
+            <li
+              key={index}
+              data-thumb={index + 1}
+              className={`group relative ${marked.has(index + 1) ? "opacity-40" : ""}`}
+            >
               <button
                 type="button"
                 onClick={() => goTo(index + 1)}
@@ -175,16 +245,61 @@ export function DocxPages({ fileId, onPages, onError }: DocxPagesProps) {
                   {index + 1}
                 </span>
               </button>
+              {pages.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => toggleMark(index + 1)}
+                  title={marked.has(index + 1) ? t("Keep this page") : t("Delete this page")}
+                  aria-label={marked.has(index + 1) ? t("Keep this page") : t("Delete this page")}
+                  data-testid={`docx-mark-page-${index + 1}`}
+                  className={`absolute right-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full text-[13px] font-semibold shadow transition-opacity ${
+                    marked.has(index + 1)
+                      ? "bg-ink-700 text-mist-100 opacity-100"
+                      : "bg-red-600 text-white opacity-0 hover:bg-red-700 focus:opacity-100 group-hover:opacity-100"
+                  }`}
+                >
+                  {marked.has(index + 1) ? "↺" : "×"}
+                </button>
+              )}
             </li>
           ))}
         </ul>
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
+        {(marked.size > 0 || notice) && (
+          <EditorBar
+            title={t("Deleting pages")}
+            fileName={fileName}
+            info={t("× on a thumbnail or the Delete key marks a page; Save writes a copy without it.")}
+            changes={marked.size}
+            saving={saving}
+            saveLabel={t("Save as Word…")}
+            notice={notice}
+            onSave={() => void save()}
+            onClose={() => {
+              setMarked(new Set());
+              setNotice(null);
+            }}
+          />
+        )}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-ink-850 px-3 text-[12px] text-mist-300">
-          <span className="font-mono" data-testid="docx-page-indicator">
+          <span className="shrink-0 whitespace-nowrap font-mono" data-testid="docx-page-indicator">
             {pages.length > 0 ? `${current} / ${pages.length}` : "…"}
           </span>
+          {pages.length > 1 && (
+            <button
+              type="button"
+              className={`btn btn-ghost gap-1.5 ${marked.has(current) ? "" : "text-danger"}`}
+              onClick={() => toggleMark(current)}
+              data-testid="docx-delete-page"
+            >
+              <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.2a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {marked.has(current) ? t("Keep page") : t("Delete page")}
+            </button>
+          )}
           <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
